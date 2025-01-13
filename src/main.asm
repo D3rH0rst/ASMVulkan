@@ -22,6 +22,7 @@ extrn vkCreateInstance
 extrn vkDestroyInstance
 extrn vkEnumeratePhysicalDevices
 extrn vkGetPhysicalDeviceProperties
+extrn vkGetPhysicalDeviceQueueFamilyProperties
 extrn malloc
 extrn free
 
@@ -126,7 +127,7 @@ init:
     push rbp
     mov rbp, rsp
     sub rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + SHADOW_SPACE
-
+    
     ; move arg to shadow space
     mov [rbp + 0x10], rcx
     
@@ -199,8 +200,8 @@ init:
     call vkEnumeratePhysicalDevices
 
     ; malloc space for devices amount
-    mov rcx, [rbp - 0x74] 
-    shl rcx, 0x3 ; device_count << 3 (same as device_count * 8)
+    mov ecx, [rbp - 0x74] 
+    shl ecx, 0x3 ; device_count << 3 (same as device_count * 8)
     call malloc
     test rax, rax
     jz .L_init_fail
@@ -212,18 +213,46 @@ init:
     lea rdx, [rbp - 0x74] ; &device_count
     mov r8, rax
     call vkEnumeratePhysicalDevices
+    
+    push rsi
+    push rdi
+    sub rsp, 0x20 ; shadow space because we pushed registers onto the stack
+    mov rsi, 0           ; i = 0
+    mov rdi, [rbp - 0x80]
+.L_device_loop:
+    cmp rsi, [rbp - 0x74] ; device_count
+    jge .L_device_loop_end
 
-    mov rcx, [rbp - 0x80]
-    mov rcx, [rcx]
+    mov rcx, [rdi + rsi * 0x8]
     call print_device_info
 
+    mov rcx, [rdi + rsi * 0x8]
+    call is_device_suitable
+    test rax, rax
+    jnz .L_device_found
+    inc rdx
+    jmp .L_device_loop
 
-    ; free devices buffer
-    mov rcx, [rbp - 0x80]
-    call free
+.L_device_loop_end:
+    add rsp, 0x20 ; restore shadow space from push rsi and rdi
+    pop rdi
+    pop rsi
+    lea rcx, [no_suitable_dev]
+    call SDL_Log
+    jmp .L_init_fail
+
+.L_device_found:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rdi + rsi * 0x8]
+    add rsp, 0x20 ; restore shadow space from push rsi and rdi
+    pop rdi
+    pop rsi
+
+    mov [rax + 0x18], rcx ; Environment->physicalDevice = physicalDevices[i]
+    lea rcx, [suitable_dev]
+    call SDL_Log
 
     jmp .L_init_success
-
 
 .L_init_fail:
     mov eax, 0
@@ -233,6 +262,10 @@ init:
     mov eax, 1
 
 .L_init_end:
+
+    ; free devices buffer
+    mov rcx, [rbp - 0x80]
+    call free
     add rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE
     pop rbp
     ret
@@ -273,6 +306,103 @@ print_device_info:
     pop rbp
     ret
 
+is_device_suitable:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+    
+    call find_queue_families
+    mov rax, 1 ; always return true
+    
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+
+find_queue_families:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64 + SHADOW_SPACE
+    mov [rbp + 0x10], rcx
+
+    ;mov rcx, [rbp + 0x10] rcx already has the device
+    lea rdx, [rbp - 0x04] ; &count
+    mov r8, 0x0
+    call vkGetPhysicalDeviceQueueFamilyProperties
+
+
+
+    ; allocate space for queuefamilies
+    mov ecx, [rbp - 0x04]
+    imul ecx, 0x18 ; size of queuefamilyproperties
+    call malloc
+    mov [rbp - 0x10], rax
+    
+    ; read in the queue families
+    mov rcx, [rbp + 0x10]
+    lea rdx, [rbp - 0x04]
+    mov r8, rax
+    call vkGetPhysicalDeviceQueueFamilyProperties
+
+    push rdi
+    push rsi
+    sub rsp, 0x20
+
+    mov rsi, 0
+    mov rdi, [rbp - 0x10]
+
+.L_family_loop:
+    cmp esi, [rbp - 0x04]
+    jge .L_family_loop_end
+
+    mov rcx, rsi
+    imul rcx, 0x18
+    add rcx, rdi
+    ;lea rcx, [rdi + rsi * 0x18]
+    call print_queue_family_info
+
+    inc rsi
+    jmp .L_family_loop
+.L_family_loop_end:
+    add rsp, 0x20 ; restore nonvolatile registers
+    pop rsi
+    pop rdi
+    ; free the allocated space
+    mov rcx, [rbp - 0x10]
+    call free
+
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+
+print_queue_family_info:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx
+
+    lea rcx, [print_sep]
+    call SDL_Log
+
+    lea rcx, [quefam_flags]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + 0x00]
+    call SDL_Log
+
+    lea rcx, [quefam_count]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + 0x04]
+    call SDL_Log
+
+    lea rcx, [quefam_tsvb]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + 0x08]
+    call SDL_Log
+
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+
 
 section '.data' data readable writeable
     window_title     db "ASM SDL Window!", 0
@@ -281,6 +411,10 @@ section '.data' data readable writeable
     vk_app_name      db "Vulkan App", 0
     vk_engine_name   db "No Engine", 0
     num_devices      db "devicesCount: 0x%X", 0
+    no_suitable_dev  db "No suitable physical device found", 0
+    suitable_dev     db "Suitable device found", 0
+
+    print_sep        db "-------------------------------", 0
 
     devprops_api     db "devprops apiVersion: 0x%X", 0
     devprops_driver  db "devprops driverVersion: 0x%X", 0
@@ -288,7 +422,12 @@ section '.data' data readable writeable
     devprops_deviceI db "devprops deviceID: 0x%X", 0
     devprops_deviceT db "devprops deviceType: 0x%X", 0
     devprops_deviceN db "devprops deviceName: %s", 0
-    
+
+    quefam_amount    db "QueFamily deviceCount: %d", 0
+    quefam_flags     db "queueFamily flags: 0x%X", 0
+    quefam_count     db "queueFamily count: 0x%X", 0
+    quefam_tsvb      db "queueFamily timestampValidBits: 0x%X", 0
+
 
 
 
