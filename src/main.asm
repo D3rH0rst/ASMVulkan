@@ -26,6 +26,7 @@ extrn vkGetDeviceQueue
 extrn vkEnumeratePhysicalDevices
 extrn vkGetPhysicalDeviceProperties
 extrn vkGetPhysicalDeviceQueueFamilyProperties
+extrn vkGetPhysicalDeviceSurfaceSupportKHR
 extrn malloc
 extrn free
 extrn memset
@@ -150,20 +151,21 @@ check_vulkan_error:
     add rsp, 0x28
     ret
 
-init:
+; rcx -> Environment*
+init_sdl:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + 0x40 + 0x10 + 0x30 + 0xE0 + 0x50 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo + SHADOW_SPACE
-    
-    ; move arg (Environment*) to shadow space
+    sub rsp, SHADOW_SPACE
+
+    ; move Environment* to shadow space
     mov [rbp + 0x10], rcx
-    
+
     ; SDL_Init
     mov rcx, SDL_INIT_VIDEO
     call SDL_Init
     call check_sdl_error
     test eax, eax
-    jz .L_init_fail
+    jz .L_sdl_init_fail
 
     ; SDL_CreateWindow
     lea rcx, [window_title]
@@ -172,92 +174,166 @@ init:
     mov r9, SDL_WINDOW_VULKAN
     call SDL_CreateWindow
     mov rcx, [rbp + 0x10]
-    mov [rcx + 0x00], rax ; .window = window
+    mov [rcx + 0x00], rax ; Environment->window = window
     call check_sdl_error
     test eax, eax
-    jz .L_init_fail
+    jz .L_sdl_init_fail
+    mov rax, 1
+    jmp .L_sdl_init_end
+
+.L_sdl_init_fail:
+    mov rax, 0
+
+.L_sdl_init_end:
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+
+; rcx -> Environment*
+create_vk_instance:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32
+
+    mov [rbp + 0x10], rcx
 
     ; set up VkApplicationInfo
-    mov DWORD [rbp - 0x30], 0x0              ; .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO
-    mov QWORD [rbp - 0x28], 0x0              ; .pNext = NULL
+    mov DWORD [rbp - 0x30 + 0x00], 0x0       ; .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO
+    mov QWORD [rbp - 0x30 + 0x08], 0x0       ; .pNext = NULL
     
-    lea rax, [vk_app_name]
-    mov [rbp - 0x20], rax                    ; .pApplicationName = "Vulkan App"
+    lea rax,  [vk_app_name]
+    mov       [rbp - 0x30 + 0x10], rax       ; .pApplicationName = "Vulkan App"
     
-    mov DWORD [rbp - 0x18], 0x400000         ; .applicationVersion = VK_MAKE_VERSION(1, 0, 0)
+    mov DWORD [rbp - 0x30 + 0x18], 0x400000  ; .applicationVersion = VK_MAKE_VERSION(1, 0, 0)
     
-    lea rax, [vk_engine_name]
-    mov [rbp - 0x10], rax                    ; .pEngineName = "No Engine"
+    lea rax,  [vk_engine_name]
+    mov       [rbp - 0x30 + 0x20], rax       ; .pEngineName = "No Engine"
 
-    mov DWORD [rbp - 0x08], 0x400000         ; .engineVersion = VK_MAKE_VERSION(1, 0, 0)
-    mov DWORD [rbp - 0x04], 0x403000         ; .apiVersion = VK_API_VERSION_1_3
+    mov DWORD [rbp - 0x30 + 0x28], 0x400000  ; .engineVersion = VK_MAKE_VERSION(1, 0, 0)
+    mov DWORD [rbp - 0x30 + 0x2C], 0x403000  ; .apiVersion = VK_API_VERSION_1_3
 
     ; set up VkInstanceCreateInfo
-    mov DWORD [rbp - 0x70], 0x1              ; .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-    mov QWORD [rbp - 0x68], 0x0              ; .pNext = NULL
-    mov DWORD [rbp - 0x60], 0x0              ; .flags = 0
+    mov DWORD [rbp - 0x70 + 0x00], 0x1       ; .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+    mov QWORD [rbp - 0x70 + 0x08], 0x0       ; .pNext = NULL
+    mov DWORD [rbp - 0x70 + 0x10], 0x0       ; .flags = 0
 
-    lea rax, [rbp - 0x30]
-    mov [rbp - 0x58], rax                    ; .pApplicationInfo = &applicationInfo (rbp - 0x30)
+    lea rax,  [rbp - 0x30]
+    mov       [rbp - 0x70 + 0x18], rax       ; .pApplicationInfo = &applicationInfo (rbp - 0x30)
 
-    mov DWORD [rbp - 0x50], 0x0              ; .enabledLayerCount = 0
-    mov QWORD [rbp - 0x48], 0x0              ; .ppEnabledLayerNames = NULL
+    mov DWORD [rbp - 0x70 + 0x20], 0x0       ; .enabledLayerCount = 0
+    mov QWORD [rbp - 0x70 + 0x28], 0x0       ; .ppEnabledLayerNames = NULL
 
-    lea rcx, [rbp - 0x74]                    ; &count
+    lea rcx,  [rbp - 0x74]                   ; &count
     call SDL_Vulkan_GetInstanceExtensions
-    mov ecx, [rbp - 0x74]
-    mov [rbp - 0x40], ecx                    ; .enabledExtensionCount = enabled_extension_count
-    mov [rbp - 0x38], rax                    ; .ppEnabledExtensionNames = extension_names
+    mov ecx,  [rbp - 0x74]
+    mov       [rbp - 0x70 + 0x30], ecx       ; .enabledExtensionCount = enabled_extension_count
+    mov       [rbp - 0x70 + 0x38], rax       ; .ppEnabledExtensionNames = extension_names
 
     ; call vkCreateInstance
-    lea rcx, [rbp - 0x70] ; createInfo = &createInfo
-    mov rdx, 0            ; Allocator = NULL
-    mov r9, [rbp + 0x10]
-    lea r8, [r9 + 0x10]   ; instance = &instance
+    lea rcx,  [rbp - 0x70]                   ; createInfo = &createInfo
+    mov rdx, 0                               ; Allocator = NULL
+    mov r9,   [rbp + 0x10]
+    lea r8,   [r9 + 0x10]                    ; instance = &instance
     call vkCreateInstance
     call check_vulkan_error
     test rax, rax
-    jz .L_init_fail
+    jz .L_create_vk_instance_fail
+
+    ; sucess
+    mov rax, 1
+    jmp .L_create_vk_instance_end
+
+.L_create_vk_instance_fail:
+    mov rax, 0
+
+.L_create_vk_instance_end:
+    add rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+
+; rcx -> Environment*
+create_vk_surface:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+
+    ; create surface
+    mov rax, rcx          ; Environment*
+    mov rcx, [rax + 0x00] ; a1 = Environment->window
+    mov rdx, [rax + 0x10] ; a2 = Environment->instance
+    mov r8,  0            ; a3 = NULL
+    lea r9,  [rax + 0x08] ; a4 = &Environment->surface
+    call SDL_Vulkan_CreateSurface
+    call check_sdl_error
+    test eax, eax
+    jz .L_create_vk_surface_fail
+
+    ;success
+    mov rax, 1
+    jmp .L_create_vk_surface_end
+
+.L_create_vk_surface_fail:
+    mov rax, 0
+
+.L_create_vk_surface_end:
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+
+; rcx -> Environment*
+pick_vk_physical_device:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64
+
+    mov [rbp + 0x10], rcx
 
     ; call vkEnumeratePhysicalDevices to count devices
-    mov r9,  [rbp + 0x10]
-    mov rcx, [r9 + 0x10] ; instance
-    lea rdx, [rbp - 0x74] ; &device_count
+    mov rax, rcx
+    mov rcx, [rax + 0x10] ; Environment->instance
+    lea rdx, [rbp - 0x04] ; &device_count
     mov r8, 0x0
     call vkEnumeratePhysicalDevices
+    call check_vulkan_error
+    test rax, rax
+    jz .L_pick_physical_device_fail
+    
 
     ; malloc space for devices amount
-    mov ecx, [rbp - 0x74] 
-    shl ecx, 0x3 ; device_count << 3 (same as device_count * 8)
+    mov ecx, [rbp - 0x04] 
+    shl ecx, 0x03 ; device_count << 3 (same as device_count * 8)
     call malloc
     test rax, rax
-    jz .L_init_fail
-    mov [rbp - 0x80], rax
+    jz .L_pick_physical_device_malloc_fail
+    mov [rbp - 0x10], rax
 
     ; read in devices
-    mov r9,  [rbp + 0x10]
-    mov rcx, [r9 + 0x10] ; instance
-    lea rdx, [rbp - 0x74] ; &device_count
-    mov r8, rax
+    mov r8,  [rbp + 0x10]
+    mov rcx, [r8 + 0x10]  ; Environment->instance
+    lea rdx, [rbp - 0x04] ; &device_count
+    mov r8, rax           ; ptr to devices from malloc
     call vkEnumeratePhysicalDevices
-    
-    push rsi
+    call check_vulkan_error
+    test rax, rax
+    jz .L_pick_physical_device_fail
+
+    push rsi ; push nonvolatile registers into the stack for restoring
     push rdi
     sub rsp, 0x20 ; shadow space because we pushed registers onto the stack
-    mov rsi, 0           ; i = 0
-    mov rdi, [rbp - 0x80]
+    mov esi, 0    ; i = 0
+    mov rdi, [rbp - 0x10] ; malloc device ptr
 .L_device_loop:
-    cmp rsi, [rbp - 0x74] ; device_count
+    cmp esi, [rbp - 0x04] ; device_count
     jge .L_device_loop_end
 
     mov rcx, [rdi + rsi * 0x8]
-    call print_device_info
+    ;call print_device_info
 
-    mov rcx, [rdi + rsi * 0x8]
+    ;mov rcx, [rdi + rsi * 0x8]
     call is_device_suitable
     test rax, rax
     jnz .L_device_found
-    inc rsi
+    inc esi
     jmp .L_device_loop
 
 .L_device_loop_end:
@@ -266,18 +342,98 @@ init:
     pop rsi
     lea rcx, [no_suitable_dev]
     call SDL_Log
-    jmp .L_init_fail
+    jmp .L_pick_physical_device_fail
 
 .L_device_found:
-    mov rax, [rbp + 0x10]
-    mov rcx, [rdi + rsi * 0x8]
+    mov rax, [rbp + 0x10]      ; Environment*
+    mov rcx, [rdi + rsi * 0x8] ; ptr to suitable physical device
     add rsp, 0x20 ; restore shadow space from push rsi and rdi
     pop rdi
-    pop rsi
+    pop rsi       ; restore nonvolatile register values
 
     mov [rax + 0x18], rcx ; Environment->physicalDevice = physicalDevices[i]
     lea rcx, [suitable_dev]
     call SDL_Log
+
+    ;sucess
+    mov rcx, [rbp - 0x10] ; no need to test, if malloc failed we wouldnt be here
+    call free
+    mov rax, 1
+    jmp .L_pick_vk_physical_device_end
+
+.L_pick_physical_device_fail:
+    mov rcx, [rbp - 0x10]
+    call free
+.L_pick_physical_device_malloc_fail:    
+    mov rax, 0
+
+.L_pick_vk_physical_device_end:
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+
+; rcx -> Environment*
+create_vk_device:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
+
+    mov [rbp + 0x10], rcx
+
+    ; create logical device
+    mov rcx, [rbp + 0x10]
+    mov rcx, [rcx + 0x18] ; a1 = Environment->physicalDevice
+    call find_queue_families
+    ; queuefamily index at rax
+
+    ; set up VkDeviceQueueCreateInfo 
+    mov DWORD [rbp - 0xB0 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    mov QWORD [rbp - 0xB0 + 0x08], 0    ; .pNext = NULL
+    mov DWORD [rbp - 0xB0 + 0x10], 0    ; .flags = 0
+    mov DWORD [rbp - 0xB0 + 0x14], eax  ; .queueFamilyIndex = eax
+    mov DWORD [rbp - 0xB0 + 0x18], 1    ; .queueCount = 1
+    
+    mov DWORD [rbp - 0xB0 + 0x28], f1_0 ; move float 1.0 to the address after the structure
+    lea rax,  [rbp - 0xB0 + 0x28]
+    mov QWORD [rbp - 0xB0 + 0x20], rax  ; .pQueuePriorities = 1.0f
+
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+
+init:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x30 + 0x40 + 0x10 + 0x30 + 0xE0 + 0x50 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo + SHADOW_SPACE
+    
+    ; move arg (Environment*) to shadow space
+    mov [rbp + 0x10], rcx
+    
+    ;mov rcx, [rbp + 0x10] its already in rcx
+    call init_sdl
+    test rax, rax
+    jz .L_init_fail
+    
+    mov rcx, [rbp + 0x10]
+    call create_vk_instance
+    test rax, rax
+    jz .L_init_fail
+
+    mov rcx, [rbp + 0x10]
+    call create_vk_surface
+    test rax, rax
+    jz .L_init_fail
+ 
+    lea rcx, [created_surface]
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + 0x08]  ; Environment->surface
+    call SDL_Log
+
+    mov rcx, [rbp + 0x10]
+    call pick_vk_physical_device
+    test rax, rax
+    jz .L_init_fail
+
 
     ; create logical device
     mov rcx, [rbp + 0x10]
@@ -349,21 +505,7 @@ init:
     mov rdx, [rax + 0x28]  ; Environment->graphicsQueue
     call SDL_Log
 
-    ; create surface
-    mov rax, [rbp + 0x10] ; Environment*
-    mov rcx, [rax + 0x00] ; a1 = Environment->window
-    mov rdx, [rax + 0x10] ; a2 = Environment->instance
-    mov r8,  0            ; a3 = NULL
-    lea r9,  [rax + 0x08] ; a4 = &Environment->surface
-    call SDL_Vulkan_CreateSurface
-    call check_sdl_error
-    test eax, eax
-    jz .L_init_fail
- 
-    lea rcx, [created_surface]
-    mov rax, [rbp + 0x10]
-    mov rdx, [rax + 0x08]  ; Environment->surface
-    call SDL_Log
+
 
     jmp .L_init_success
 
@@ -421,11 +563,15 @@ print_device_info:
     pop rbp
     ret
 
+; rcx -> Environment ; rdx -> VkPhysicalDevice
 is_device_suitable:
     push rbp
     mov rbp, rsp
-    sub rsp, SHADOW_SPACE
+    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
     
+    ;rcx has Environment
+    ;rdx has VkPhysicalDevice
+    lea r8, [rbp - 0x10]
     call find_queue_families
     cmp eax, -1
     jne .L_ret_true
@@ -438,46 +584,57 @@ is_device_suitable:
     mov rax, 0
 
 .L_device_suitable_end:
-    add rsp, SHADOW_SPACE
+    add rsp, 0x10 + SHADOW_SPACE
     pop rbp
     ret
 
+; rcx -> Environment*, rdx -> VkPhysicalDevice, r8 -> QueueFamilyIndices*
 find_queue_families:
     push rbp
     mov rbp, rsp
     sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64 + SHADOW_SPACE
-    mov [rbp + 0x10], rcx
 
-    ;mov rcx, [rbp + 0x10] rcx already has the device
+    mov [rbp + 0x10], rcx ; Environment*
+    mov [rbp + 0x18], rdx ; VkPhysicalDevice
+    mov [rbp + 0x20], r8  ; QueueFamilyIndices
+
+    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice
     lea rdx, [rbp - 0x04] ; &count
     mov r8, 0x0
     call vkGetPhysicalDeviceQueueFamilyProperties
 
     ; allocate space for queuefamilies
-    mov ecx, [rbp - 0x04]
+    mov ecx, [rbp - 0x04] ; count
     imul ecx, 0x18 ; size of queuefamilyproperties
     call malloc
+    test rax, rax
+    jz .L_find_queue_families_malloc_fail
     mov [rbp - 0x10], rax
     
-    mov DWORD [rbp - 0x08], -1 ; -1 as default return value
-
     ; read in the queue families
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + 0x18]
     lea rdx, [rbp - 0x04]
     mov r8, rax
     call vkGetPhysicalDeviceQueueFamilyProperties
 
+    ;mov DWORD [rbp - 0x08], -1 ; -1 as default return value
+    ; initialize indices to sentinel value
+    mov rax,  [rbp + 0x20] ; QueueFamilyIndices*
+    mov DWORD [rax + 0x00], -1  ; indices->graphicsFamily = -1
+    mov DWORD [rax + 0x04], -1  ; indices->presentFamily  = -1
+    
+    ; save old registers and allocate shadow space
     push rdi
     push rsi
     sub rsp, 0x20
 
-    mov rsi, 0
+    mov esi, 0
     mov rdi, [rbp - 0x10]
 
 .L_family_loop:
     cmp esi, [rbp - 0x04]
     jge .L_family_loop_end
-
+    ; check if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
     mov rcx, rsi
     imul rcx, 0x18
     add rcx, rdi
@@ -485,23 +642,52 @@ find_queue_families:
     mov edx, [rcx + 0x0] ; edx contains .queueFlags
     and edx, 0x1         ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
     test edx, edx
-    jnz .L_family_found
+    jz .L_check_present_family
+    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+    mov DWORD [rax + 0x00], esi  ; indices->graphicsFamily = i
+.L_check_present_family:
+    mov rcx, [rbp + 0x18] ; a1 = device
+    mov rdx, rsi          ; a2 = i
+    mov rax, [rbp + 0x10]
+    mov r8,  [rax + 0x08] ; a3 = Environment->surface
+    lea r9d, [rbp + 0x08]
+    call vkGetPhysicalDeviceSurfaceSupportKHR
+    mov eax, [rbp + 0x08]
+    test eax, eax
+    jz .L_family_loop_check
+    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+    mov DWORD [rax + 0x04], esi  ; indices->presentFamily = i
 
+.L_family_loop_check:
+    ; check here if both families have valid (!= -1) indices, if yes, break
+    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+    mov ecx, [rax + 0x00] ; indices->graphicsFamily
+    mov edx, [rax + 0x04] ; indices->presentFamily
+    or ecx, edx           ; is either -1?
+    cmp edx, -1
+    je .L_family_loop_inc
+    jmp .L_family_loop_end
+
+.L_family_loop_inc:
     inc rsi
     jmp .L_family_loop
-.L_family_found:
-    ;call print_queue_family_info
-    mov [rbp - 0x8], esi ; store the index as the return value
+
 .L_family_loop_end:
     add rsp, 0x20 ; restore nonvolatile registers
     pop rsi
     pop rdi
-    ; free the allocated space
-    mov rcx, [rbp - 0x10]
+    
+    ;sucess:
+    mov rax, 1
+    mov rcx, [rbp - 0x10] ; malloc'd memory
     call free
 
-    mov eax, [rbp - 0x8] ; get the return value 
+.L_find_queue_families_fail:
+    call free
+.L_find_queue_families_malloc_fail:
+    mov rax, 0
 
+.L_find_queue_families_end:
     add rsp, 0x10 + SHADOW_SPACE
     pop rbp
     ret
