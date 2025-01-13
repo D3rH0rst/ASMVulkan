@@ -47,8 +47,9 @@ f1_0 = 0x3f800000
 ;    .vk_pysicaldevice dq 0
 ;    .vk_device        dq 0
 ;    .vk_graphicsQueue dq 0
+;    .vk_presentQueue  dq 0
 ;}
-ENV_SZ = 0x30
+ENV_SZ = 0x40
 
 ;struc SDL_Event {
 ;    .reserved rb 0x80 ; size of the SDL_Event struct in C
@@ -60,7 +61,7 @@ section '.text' code readable executable
 start:
     push rbp
     mov rbp, rsp
-    sub rsp, ENV_SZ + EVENT_SZ + SHADOW_SPACE ;0x30 -> Environment, 0x80 -> SDL_Event, 0x20 -> Shadow Space
+    sub rsp, ENV_SZ + EVENT_SZ + SHADOW_SPACE ;0x40 -> Environment, 0x80 -> SDL_Event, 0x20 -> Shadow Space
 
     lea rcx, [rbp - ENV_SZ] ; Environment
     call init
@@ -297,7 +298,6 @@ pick_vk_physical_device:
     call check_vulkan_error
     test rax, rax
     jz .L_pick_physical_device_fail
-    
 
     ; malloc space for devices amount
     mov ecx, [rbp - 0x04] 
@@ -326,10 +326,11 @@ pick_vk_physical_device:
     cmp esi, [rbp - 0x04] ; device_count
     jge .L_device_loop_end
 
-    mov rcx, [rdi + rsi * 0x8]
     ;call print_device_info
 
     ;mov rcx, [rdi + rsi * 0x8]
+    mov rcx, [rbp + 0x10]      ; environment
+    mov rdx, [rdi + rsi * 0x8] ; device
     call is_device_suitable
     test rax, rax
     jnz .L_device_found
@@ -352,8 +353,6 @@ pick_vk_physical_device:
     pop rsi       ; restore nonvolatile register values
 
     mov [rax + 0x18], rcx ; Environment->physicalDevice = physicalDevices[i]
-    lea rcx, [suitable_dev]
-    call SDL_Log
 
     ;sucess
     mov rcx, [rbp - 0x10] ; no need to test, if malloc failed we wouldnt be here
@@ -376,35 +375,121 @@ pick_vk_physical_device:
 create_vk_device:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
+    sub rsp, 0x10 + 0x50 + 0xE0 + 0x50 + SHADOW_SPACE ; QueueFamilyIndices + 2 * VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo
 
     mov [rbp + 0x10], rcx
 
     ; create logical device
-    mov rcx, [rbp + 0x10]
-    mov rcx, [rcx + 0x18] ; a1 = Environment->physicalDevice
+    mov rcx, [rbp + 0x10] ; a1 = Environment
+    mov rdx, [rcx + 0x18] ; a2 = Environment->physicalDevice
+    lea r8,  [rbp - 0x10] ; a3 = &indices
     call find_queue_families
-    ; queuefamily index at rax
+
+    mov DWORD [rbp - 0x04], 1   ; assume both indices are equal
+    ; check if the indices are equal
+    mov eax, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
+    cmp eax, [rbp - 0x10 + 0x04] ; indices->presentFamily
+    setne cl                     ; cl = i->gf != i->pf
+    movzx eax, cl                ; extend register
+    add DWORD [rbp - 0x04], eax  ; add 0 or one  to the count
+
+
 
     ; set up VkDeviceQueueCreateInfo 
-    mov DWORD [rbp - 0xB0 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov QWORD [rbp - 0xB0 + 0x08], 0    ; .pNext = NULL
-    mov DWORD [rbp - 0xB0 + 0x10], 0    ; .flags = 0
-    mov DWORD [rbp - 0xB0 + 0x14], eax  ; .queueFamilyIndex = eax
-    mov DWORD [rbp - 0xB0 + 0x18], 1    ; .queueCount = 1
-    
-    mov DWORD [rbp - 0xB0 + 0x28], f1_0 ; move float 1.0 to the address after the structure
-    lea rax,  [rbp - 0xB0 + 0x28]
-    mov QWORD [rbp - 0xB0 + 0x20], rax  ; .pQueuePriorities = 1.0f
+    mov DWORD [rbp - 0x60 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    mov QWORD [rbp - 0x60 + 0x08], 0    ; .pNext = NULL
+    mov DWORD [rbp - 0x60 + 0x10], 0    ; .flags = 0
 
-    add rsp, 0x10 + SHADOW_SPACE
+    mov eax,  [rbp - 0x10 + 0x00]       ; indices->graphicsFamily
+    mov DWORD [rbp - 0x60 + 0x14], eax  ; .queueFamilyIndex = indices->graphicsFamily
+
+    mov DWORD [rbp - 0x60 + 0x18], 1    ; .queueCount = 1
+    
+    mov DWORD [rbp - 0x08], f1_0        ; move float 1.0 to a free stack space
+    lea rax,  [rbp - 0x08]              ; rax = &f1_0
+    mov QWORD [rbp - 0x60 + 0x20], rax  ; .pQueuePriorities = rax
+
+    mov eax, [rbp - 0x04]
+    cmp eax, 1
+    je .L_create_vk_device_after_queue_create_info
+    ; set up the second structure if the indices are not the same
+    mov DWORD [rbp - 0x38 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    mov QWORD [rbp - 0x38 + 0x08], 0    ; .pNext = NULL
+    mov DWORD [rbp - 0x38 + 0x10], 0    ; .flags = 0
+
+    mov eax,  [rbp - 0x10 + 0x04]       ; indices->presentFamily
+    mov DWORD [rbp - 0x38 + 0x14], eax  ; .queueFamilyIndex = indices->presentFamily
+
+    mov DWORD [rbp - 0x38 + 0x18], 1    ; .queueCount = 1
+    
+    lea rax,  [rbp - 0x08]              ; rax = &f1_0
+    mov QWORD [rbp - 0x38 + 0x20], rax  ; .pQueuePriorities = rax
+
+.L_create_vk_device_after_queue_create_info:
+    ; set up VkPhysicalDeviceFeatures
+    lea rcx, [rbp - 0x140] ; &deviceFeatures
+    mov edx, 0             ; value
+    mov r8, 0xDC           ; sizeof(VkPhysicalDeviceFeatures)
+    call memset
+
+    ; set up VkDeviceCreateInfo
+    mov DWORD [rbp - 0x190 + 0x00], 0x3 ; .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+    mov QWORD [rbp - 0x190 + 0x08], 0   ; .pNext = NULL
+    mov DWORD [rbp - 0x190 + 0x10], 0   ; .flags = 0
+    mov eax,  [rbp - 0x004 + 0x00]      ;  count
+    mov DWORD [rbp - 0x190 + 0x14], eax ; .queueCreateInfoCount = count
+    lea rax,  [rbp - 0x060 + 0x00]      ;  &queueCreateInfos
+    mov       [rbp - 0x190 + 0x18], rax ; .pQueueCreateInfos = &queueCreateInfos
+    mov DWORD [rbp - 0x190 + 0x20], 0   ; .enabledLayerCount = 0
+    mov QWORD [rbp - 0x190 + 0x28], 0   ; .ppEnabledLayerNames = NULL
+    mov DWORD [rbp - 0x190 + 0x30], 0   ; .enabledExtensionCount = 0
+    mov QWORD [rbp - 0x190 + 0x38], 0   ; .ppEnabledExtensionNames = NULL
+    lea rax,  [rbp - 0x140 + 0x00]      ;  &deviceFeatures
+    mov QWORD [rbp - 0x190 + 0x40], rax ; .pEnabledFeatures = &deviceFeatures
+
+    ; call vkCreateDevice
+    mov rax, [rbp + 0x010]
+    mov rcx, [rax + 0x018] ; a1 = Environment->physicalDevice
+    lea rdx, [rbp - 0x190] ; a2 = &createInfo
+    mov r8,  0             ; a3 = NULL
+    lea r9,  [rax + 0x020] ; a4 = &device
+    call vkCreateDevice
+    call check_vulkan_error
+    test eax, eax
+    jz .L_create_vk_device_fail
+
+    ; get the graphicsQueue
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + 0x20]        ; a1 = Environment->device
+    mov edx, [rbp - 0x10 + 0x00] ; a2 = indices->graphicsFamily
+    mov r8, 0                    ; a3 = 0
+    lea r9, [rax + 0x28]         ; a4 = &graphicsQueue
+    call vkGetDeviceQueue
+    
+    ; get the presentQueue
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + 0x20]        ; a1 = Environment->device
+    mov edx, [rbp - 0x10 + 0x04] ; a2 = indices->presentFamily
+    mov r8, 0                    ; a3 = 0
+    lea r9, [rax + 0x30]         ; a4 = &presentQueue
+    call vkGetDeviceQueue
+
+    ; success:
+    mov rax, 1
+    jmp .L_create_vk_device_end
+
+.L_create_vk_device_fail:
+    mov rax, 0
+
+.L_create_vk_device_end:
+    add rsp, 0x10 + 0x50 + 0xE0 + 0x50 + SHADOW_SPACE
     pop rbp
     ret
 
 init:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + 0x40 + 0x10 + 0x30 + 0xE0 + 0x50 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo + SHADOW_SPACE
+    sub rsp, SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo + SHADOW_SPACE
     
     ; move arg (Environment*) to shadow space
     mov [rbp + 0x10], rcx
@@ -414,19 +499,23 @@ init:
     test rax, rax
     jz .L_init_fail
     
+    lea rcx, [init_sdl_success]
+    call SDL_Log
+
     mov rcx, [rbp + 0x10]
     call create_vk_instance
     test rax, rax
     jz .L_init_fail
+
+    lea rcx, [create_vki_success]
+    call SDL_Log
 
     mov rcx, [rbp + 0x10]
     call create_vk_surface
     test rax, rax
     jz .L_init_fail
  
-    lea rcx, [created_surface]
-    mov rax, [rbp + 0x10]
-    mov rdx, [rax + 0x08]  ; Environment->surface
+    lea rcx, [create_vks_success]
     call SDL_Log
 
     mov rcx, [rbp + 0x10]
@@ -434,96 +523,28 @@ init:
     test rax, rax
     jz .L_init_fail
 
+    lea rcx, [pick_phd_success]
+    call SDL_Log
 
-    ; create logical device
     mov rcx, [rbp + 0x10]
-    mov rcx, [rcx + 0x18] ; a1 = Environment->physicalDevice
-    call find_queue_families
-    ; queuefamily index at rax
-
-    ; set up VkDeviceQueueCreateInfo 
-    mov DWORD [rbp - 0xB0 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov QWORD [rbp - 0xB0 + 0x08], 0    ; .pNext = NULL
-    mov DWORD [rbp - 0xB0 + 0x10], 0    ; .flags = 0
-    mov DWORD [rbp - 0xB0 + 0x14], eax  ; .queueFamilyIndex = eax
-    mov DWORD [rbp - 0xB0 + 0x18], 1    ; .queueCount = 1
-    
-    mov DWORD [rbp - 0xB0 + 0x28], f1_0 ; move float 1.0 to the address after the structure
-    lea rax,  [rbp - 0xB0 + 0x28]
-    mov QWORD [rbp - 0xB0 + 0x20], rax  ; .pQueuePriorities = 1.0f
-
-    ; set up VkPhysicalDeviceFeatures
-    lea rcx, [rbp - 0x190] ; &deviceFeatures
-    mov edx, 0             ; value
-    mov r8, 0xDC           ; sizeof(VkPhysicalDeviceFeatures)
-    call memset
-
-    ; set up VkDeviceCreateInfo
-    mov DWORD [rbp - 0x1E0 + 0x00], 0x3 ; .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
-    mov QWORD [rbp - 0x1E0 + 0x08], 0   ; .pNext = NULL
-    mov DWORD [rbp - 0x1E0 + 0x10], 0   ; .flags = 0
-    mov DWORD [rbp - 0x1E0 + 0x14], 1   ; .queueCreateInfoCount = 1
-    lea rax,  [rbp - 0x0B0 + 0x00]      ;  &queueCreateInfo
-    mov       [rbp - 0x1E0 + 0x18], rax ; .pQueueCreateInfos = &queueCreateInfo
-    mov DWORD [rbp - 0x1E0 + 0x20], 0   ; .enabledLayerCount = 0
-    mov QWORD [rbp - 0x1E0 + 0x28], 0   ; .ppEnabledLayerNames = NULL
-    mov DWORD [rbp - 0x1E0 + 0x30], 0   ; .enabledExtensionCount = 0
-    mov QWORD [rbp - 0x1E0 + 0x38], 0   ; .ppEnabledExtensionNames = NULL
-    lea rax,  [rbp - 0x190 + 0x00]      ;  &deviceFeatures
-    mov QWORD [rbp - 0x1E0 + 0x40], rax ; .pEnabledFeatures = &deviceFeatures
-
-    ; call vkCreateDevice
-    mov rax, [rbp + 0x10]
-    mov rcx, [rax + 0x18]  ; a1 = Environment->physicalDevice
-    lea rdx, [rbp - 0x1E0] ; a2 = &createInfo
-    mov r8,  0             ; a3 = NULL
-    lea r9,  [rax + 0x20]  ; a4 = &device
-    call vkCreateDevice
-    call check_vulkan_error
-    test eax, eax
+    call create_vk_device
+    test rax, rax
     jz .L_init_fail
 
-    lea rcx, [created_device]
-    mov rax, [rbp + 0x10]
-    mov rdx, [rax + 0x20]  ; Environment->device
+    lea rcx, [create_vkd_success]
     call SDL_Log
-
-    mov rcx, [rbp + 0x10]
-    mov rcx, [rcx + 0x18] ; a1 = Environment->physicalDevice
-    call find_queue_families
-    ; queueFamilyIndex at rax
-
-    mov r10, [rbp + 0x10]
-    mov rcx, [r10 + 0x20]  ; a1 = Environment.device
-    mov r8, 0              ; a3 = 0
-    lea r9, [r10 + 0x28]   ; a4 = &graphicsQueue
-    mov edx, eax           ; a2 = queueFamilyIndex
-    call vkGetDeviceQueue
-    
-    lea rcx, [got_device_queue]
-    mov rax, [rbp + 0x10]
-    mov rdx, [rax + 0x28]  ; Environment->graphicsQueue
-    call SDL_Log
-
-
 
     jmp .L_init_success
 
 .L_init_fail:
-    ; free devices buffer
-    mov rcx, [rbp - 0x80]
-    call free
     mov eax, 0
     jmp .L_init_end
 
 .L_init_success:
-    ; free devices buffer
-    mov rcx, [rbp - 0x80]
-    call free
     mov eax, 1
 
 .L_init_end:
-    add rsp, 0x30 + 0x40 + 0x10 + 0x30 + 0xE0 + 0x50 + SHADOW_SPACE
+    add rsp, SHADOW_SPACE
     pop rbp
     ret
 
@@ -573,14 +594,20 @@ is_device_suitable:
     ;rdx has VkPhysicalDevice
     lea r8, [rbp - 0x10]
     call find_queue_families
-    cmp eax, -1
-    jne .L_ret_true
+    test rax, rax
+    jz .L_device_suitable_false
+    ; check here if both families have valid (!= -1) indices, if yes, return true
+    mov ecx, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
+    mov edx, [rbp - 0x10 + 0x04] ; indices->presentFamily
+    or ecx, edx           ; is either -1?
+    cmp ecx, -1
+    je .L_device_suitable_false
 
-.L_ret_true:
+.L_device_suitable_true:
     mov rax, 1
     jmp .L_device_suitable_end
 
-.L_ret_false:
+.L_device_suitable_false:
     mov rax, 0
 
 .L_device_suitable_end:
@@ -643,19 +670,19 @@ find_queue_families:
     and edx, 0x1         ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
     test edx, edx
     jz .L_check_present_family
-    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
     mov DWORD [rax + 0x00], esi  ; indices->graphicsFamily = i
 .L_check_present_family:
     mov rcx, [rbp + 0x18] ; a1 = device
-    mov rdx, rsi          ; a2 = i
-    mov rax, [rbp + 0x10]
+    mov edx, esi          ; a2 = i
+    mov rax, [rbp + 0x10] ; Environment
     mov r8,  [rax + 0x08] ; a3 = Environment->surface
-    lea r9d, [rbp + 0x08]
+    lea r9,  [rbp - 0x08]
     call vkGetPhysicalDeviceSurfaceSupportKHR
-    mov eax, [rbp + 0x08]
+    mov eax, [rbp - 0x08]
     test eax, eax
     jz .L_family_loop_check
-    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
     mov DWORD [rax + 0x04], esi  ; indices->presentFamily = i
 
 .L_family_loop_check:
@@ -664,7 +691,7 @@ find_queue_families:
     mov ecx, [rax + 0x00] ; indices->graphicsFamily
     mov edx, [rax + 0x04] ; indices->presentFamily
     or ecx, edx           ; is either -1?
-    cmp edx, -1
+    cmp ecx, -1
     je .L_family_loop_inc
     jmp .L_family_loop_end
 
@@ -678,9 +705,10 @@ find_queue_families:
     pop rdi
     
     ;sucess:
-    mov rax, 1
     mov rcx, [rbp - 0x10] ; malloc'd memory
     call free
+    mov rax, 1
+    jmp .L_find_queue_families_end
 
 .L_find_queue_families_fail:
     call free
@@ -734,8 +762,17 @@ section '.data' data readable writeable
     created_device   db "Created Vulkan Device: 0x%llX", 0
     got_device_queue db "Got Device Queue: 0x%llX", 0
     created_surface  db "Created Vulkan Surface at 0x%llX", 0
-
+    picked_phd       db "Picked physical device: 0x%llX", 0
+    log_debug        db "Here", 0
+    log_num          db "0x%llX", 0
+    print_indices    db "graphicsFamily: %d, presentFamily: %d", 0
     print_sep        db "-------------------------------", 0
+
+    init_sdl_success db "Succesfully initialized SDL", 0
+    create_vki_success db "Successfully created vulkan instance", 0
+    create_vks_success db "Successfully created vulkan surface", 0
+    pick_phd_success db "Successfully picked a physical device", 0
+    create_vkd_success db "Successfully created vulkan device", 0
 
     devprops_api     db "devprops apiVersion: 0x%X", 0
     devprops_driver  db "devprops driverVersion: 0x%X", 0
@@ -743,6 +780,7 @@ section '.data' data readable writeable
     devprops_deviceI db "devprops deviceID: 0x%X", 0
     devprops_deviceT db "devprops deviceType: 0x%X", 0
     devprops_deviceN db "devprops deviceName: %s", 0
+
 
     quefam_amount    db "QueFamily deviceCount: %d", 0
     quefam_flags     db "queueFamily flags: 0x%X", 0
