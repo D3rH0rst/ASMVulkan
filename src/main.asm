@@ -7,12 +7,8 @@ extrn SDL_DestroyWindow
 extrn SDL_CreateRenderer
 extrn SDL_DestroyRenderer
 extrn SDL_Quit
-extrn SDL_SetRenderDrawColor
-extrn SDL_RenderClear
-extrn SDL_RenderPresent
 extrn SDL_SetWindowTitle
 extrn SDL_PollEvent
-extrn SDL_WaitEvent
 extrn SDL_Log
 extrn SDL_GetError
 extrn SDL_Vulkan_CreateSurface
@@ -27,6 +23,7 @@ extrn vkEnumeratePhysicalDevices
 extrn vkGetPhysicalDeviceProperties
 extrn vkGetPhysicalDeviceQueueFamilyProperties
 extrn vkGetPhysicalDeviceSurfaceSupportKHR
+extrn vkEnumerateDeviceExtensionProperties
 extrn malloc
 extrn free
 extrn memset
@@ -590,9 +587,12 @@ is_device_suitable:
     mov rbp, rsp
     sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
     
+    mov [rbp + 0x10], rcx ; Environment*
+    mov [rbp + 0x18], rdx ; VkPhsyicalDevice*
+
     ;rcx has Environment
     ;rdx has VkPhysicalDevice
-    lea r8, [rbp - 0x10]
+    lea r8, [rbp - 0x10] ; &indices
     call find_queue_families
     test rax, rax
     jz .L_device_suitable_false
@@ -603,6 +603,10 @@ is_device_suitable:
     cmp ecx, -1
     je .L_device_suitable_false
 
+    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice*
+    call check_device_extension_support
+    test rax, rax
+    jz .L_device_suitable_false
 .L_device_suitable_true:
     mov rax, 1
     jmp .L_device_suitable_end
@@ -720,6 +724,84 @@ find_queue_families:
     pop rbp
     ret
 
+check_device_extension_support:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE ; uint32, uint64
+
+    mov [rbp + 0x10], rcx
+
+    ; call vkEnumerateDeviceExtensionProperties
+    ; rcx has the device ; a1 = device
+    mov rdx, 0           ; a2 = NULL
+    lea r8,  [rbp - 0x04]; a3 = &extensionCount
+    mov r9,  0           ; a4 = NULL
+    call vkEnumerateDeviceExtensionProperties
+    call check_vulkan_error
+    test rax, rax
+    jz .L_check_device_extension_support_false
+
+    mov ecx, [rbp - 0x04] ; extensionCount
+    imul ecx, 0x104       ; sizeof(VkExtensionProperties)
+    call malloc
+    test rax, rax
+    jz .L_check_device_extension_support_false
+    mov [rbp - 0x10], rax
+
+    mov rcx, [rbp + 0x10] ; a1 = device
+    mov rdx, 0            ; a2 = NULL
+    lea r8,  [rbp - 0x04] ; a3 = &extensionCount
+    mov r9,  [rbp - 0x10] ; a4 = malloc'd ptr
+    call vkEnumerateDeviceExtensionProperties
+    call check_vulkan_error
+    test rax, rax
+    jz .L_check_device_extension_support_error
+
+    push rsi
+    push rdi
+    sub rsp, SHADOW_SPACE
+
+    mov rsi, 0              ; i = 0
+    mov rdi, [rbp - 0x10]   ; baseptr
+    mov DWORD [rbp - 0x08], device_extensions_size ; required_extensions_size
+.L_extension_loop:
+    cmp esi, [rbp - 0x04] ; count
+    jge .L_extension_loop_end
+    
+    mov rdx, rsi
+    imul rdx, 0x104
+    add rdx, rdi ; rdx now contains a char* to the extension name
+
+    
+
+    inc rsi
+    jmp .L_extension_loop
+.L_extension_loop_end:
+    add rsp, SHADOW_SPACE
+    pop rdi
+    pop rsi
+
+
+    mov rcx, [rbp - 0x10]
+    call free
+    
+
+.L_check_device_extension_support_true:
+    mov rax, 1
+    jmp .L_check_device_extension_support_end
+
+.L_check_device_extension_support_error:
+    mov rcx, [rbp - 0x10]
+    call free
+.L_check_device_extension_support_false:
+    mov rax, 0
+
+.L_check_device_extension_support_end:
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+
+
 print_queue_family_info:
     push rbp
     mov rbp, rsp
@@ -756,17 +838,11 @@ section '.data' data readable writeable
     log_vulkan_error db "Vulkan Error occured: 0x%X", 0
     vk_app_name      db "Vulkan App", 0
     vk_engine_name   db "No Engine", 0
-    num_devices      db "devicesCount: 0x%X", 0
     no_suitable_dev  db "No suitable physical device found", 0
-    suitable_dev     db "Suitable device found", 0
-    created_device   db "Created Vulkan Device: 0x%llX", 0
-    got_device_queue db "Got Device Queue: 0x%llX", 0
-    created_surface  db "Created Vulkan Surface at 0x%llX", 0
-    picked_phd       db "Picked physical device: 0x%llX", 0
-    log_debug        db "Here", 0
-    log_num          db "0x%llX", 0
-    print_indices    db "graphicsFamily: %d, presentFamily: %d", 0
     print_sep        db "-------------------------------", 0
+    log_int          db "%d", 0
+    log_ptr          db "0x%llX", 0
+    log_ext_name     db "Device Extension: %s", 0
 
     init_sdl_success db "Succesfully initialized SDL", 0
     create_vki_success db "Successfully created vulkan instance", 0
@@ -788,6 +864,9 @@ section '.data' data readable writeable
     quefam_tsvb      db "queueFamily timestampValidBits: 0x%X", 0
     quefam_index     db "queueFamily index: %d", 0
 
+    device_ext1      db "VK_KHR_swapchain", 0
+    device_extensions dq device_ext1
+    device_extensions_size = ($ - device_extensions) / 8
 
 
 
