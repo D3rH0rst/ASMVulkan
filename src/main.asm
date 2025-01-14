@@ -46,110 +46,172 @@ f1_0 = 0x3f800000
 ;    .vk_graphicsQueue dq 0
 ;    .vk_presentQueue  dq 0
 ;}
-ENV_SZ = 0x40
+ENV_SZ               = 0x40
+; members
+ENV_WINDOW           = 0x00
+ENV_SURFACE          = 0x08
+ENV_VK_INSTANCE      = 0x10
+ENV_VK_PHDEVICE      = 0x18
+ENV_VK_DEVICE        = 0x20
+ENV_VK_GRAPHICSQUEUE = 0x28
+ENV_VK_PRESENTQUEUE  = 0x30
+; members end
 
 ;struc SDL_Event {
 ;    .reserved rb 0x80 ; size of the SDL_Event struct in C
 ;}
 EVENT_SZ = 0x80
+; members
+EVENT_TYPE = 0x0
+; members end
+
+; event types
+SDL_EVENT_QUIT = 0x100
+;event types end
 
 section '.text' code readable executable
 
+;=========================================== main ==============================================
 start:
     push rbp
     mov rbp, rsp
-    sub rsp, ENV_SZ + EVENT_SZ + SHADOW_SPACE ;0x40 -> Environment, 0x80 -> SDL_Event, 0x20 -> Shadow Space
+    sub rsp, ENV_SZ + 0x10 + SHADOW_SPACE ; ENV_SZ(0x40) -> Environment, 0x10 -> return value, 0x20 -> Shadow Space
 
     lea rcx, [rbp - ENV_SZ] ; Environment
     call init
     test eax, eax
-    jz .L_quit
+    jz .L_cleanup
 
-.L_event_loop:
+    lea rcx, [rbp - ENV_SZ]
+    call main_loop
+    mov [rbp - ENV_SZ - 0x04], eax ; store return value
 
-.L_poll_event:
-    lea rcx, [rbp - ENV_SZ - EVENT_SZ] ; first var on the stack, SDL_Event
-    call SDL_PollEvent
-    mov edx, [rbp - ENV_SZ - EVENT_SZ + 0x00] ; (SDL_Event - 0x0) = event.type
-    cmp edx, 0x100 ; SDL_EVENT_QUIT
-    je .L_quit
+    .L_cleanup:
+    lea rcx, [rbp - ENV_SZ]
+    call cleanup
+
+    mov eax, [rbp - ENV_SZ - 0x04] ; get stored return value
+    add rsp, ENV_SZ + 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;========================================= END main ============================================
+
+;=========================== init - arg1: Environment* - ret: bool =============================
+init:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE ; 0x20 SHADOW_SPACE
+    
+    ; move arg (Environment*) to shadow space
+    mov [rbp + 0x10], rcx
+    
+    ; initialize SDL
+    ;mov rcx, [rbp + 0x10] its already in rcx
+    call init_sdl
     test rax, rax
-    jnz .L_poll_event
+    jz .L_init_fail
+
+    ; initialize Vulkan
+    mov rcx, [rbp + 0x10]
+    call init_vulkan
+    test rax, rax
+    jz .L_init_fail
+
+    ; success
+    mov rax, 1
+    jmp .L_init_end
+
+    .L_init_fail:
+    mov rax, 0
+    jmp .L_init_end    
+
+    .L_init_end:
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+;======================================== END init =============================================
+
+;========================= main_loop - arg1: Environment* - ret: int ===========================
+main_loop:
+    push rbp
+    mov rbp, rsp
+    sub rsp, EVENT_SZ + SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx ; mov Env* to shadow space
+
+    .L_main_loop_poll_event:
+    lea rcx, [rbp - EVENT_SZ] ; first var on the stack, SDL_Event
+    call SDL_PollEvent
+    mov edx, [rbp - EVENT_SZ + EVENT_TYPE] ; (SDL_Event + 0x0) = event.type
+    cmp edx, SDL_EVENT_QUIT
+    je .L_main_loop_end
+    test rax, rax
+    jnz .L_main_loop_poll_event
 
     ;render everything here
 
-    jmp .L_event_loop
+    jmp .L_main_loop_poll_event
 
-
-.L_quit:
-    mov rcx, [rbp - ENV_SZ + 0x10] ; environmen.instance
-    mov rdx, [rbp - ENV_SZ + 0x08] ; environment.surface
-    mov r8,  0
-    test rcx, rcx
-    jz .L_quit3
-    test rdx, rdx
-    jz .L_quit1
-    call SDL_Vulkan_DestroySurface
-
-.L_quit1:
-    mov rcx, [rbp - ENV_SZ + 0x20] ; environment.device
-    mov rdx, 0
-    test rcx, rcx
-    jz .L_quit2
-    call vkDestroyDevice
-
-.L_quit2:
-    mov rcx, [rbp - ENV_SZ + 0x10] ; environment.instance
-    mov rdx, 0
-    test rcx, rcx
-    jz .L_quit3
-    call vkDestroyInstance
-
-.L_quit3:
-    mov rcx, [rbp - ENV_SZ + 0x00] ; environment.window
-    test rcx, rcx
-    jz .L_quit4
-    call SDL_DestroyWindow
-
-.L_quit4:
-    call SDL_Quit
-
-    add rsp, ENV_SZ + EVENT_SZ + SHADOW_SPACE
+    .L_main_loop_end:
+    mov rax, 0 ; zero indicates success here, return nonzero on failure
+    add rsp, EVENT_SZ + SHADOW_SPACE
     pop rbp
     ret
+;===================================== END main_loop ===========================================
 
-check_sdl_error:
-    sub rsp, 0x28 ; 0x20 shadow space, 0x8 alignment to 16 bytes
-    test rax, rax
-    jz .L_sdl_error
-    mov eax, 1
-    jmp .L_check_sdl_error_end
-.L_sdl_error:
-    call SDL_GetError
-    lea rcx, [log_sdl_error]
-    mov rdx, rax
-    call SDL_Log
-    mov eax, 0
-.L_check_sdl_error_end:
-    add rsp, 0x28
+;========================== cleanup - arg1: Environment* - ret: bool ===========================
+cleanup:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+    
+    mov [rbp + 0x10], rcx ; mov Env* to shadow space
+
+    ; SDL_Vulkan_DestroySurface
+    mov rax, [rbp + 0x10] ; load Env* pointer
+    mov rcx, [rax + ENV_VK_INSTANCE] ; environment.instance
+    mov rdx, [rax + ENV_SURFACE] ; environment.surface
+    mov r8,  0            ; NULL
+    test rcx, rcx         ; if vk_instance is NULL, skip over vulkan cleanup as the other vulkan resources will be invalid too
+    jz .L_cleanup_window
+    test rdx, rdx         ; if vk_surface is NULL, go to vkDestroyDevice
+    jz .L_cleanup_device           
+    call SDL_Vulkan_DestroySurface
+
+    .L_cleanup_device:
+    mov rax, [rbp + 0x10] ; load Env* pointer
+    mov rcx, [rax + ENV_VK_DEVICE] ; environment.device
+    mov rdx, 0            ; NULL
+    mov r8, 0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    call vkDestroyDevice
+
+    .L_cleanup_instance:
+    mov rax, [rbp + 0x10] ; load Env* pointer
+    mov rcx, [rax + ENV_VK_INSTANCE] ; environment.instance
+    mov rdx, 0
+    mov r8, 0
+    test rcx, rcx
+    jz .L_cleanup_window
+    call vkDestroyInstance
+
+    .L_cleanup_window:
+    mov rax, [rbp + 0x10] ; load Env* pointer
+    mov rcx, [rax + ENV_WINDOW] ; environment.window
+    test rcx, rcx
+    jz .L_cleanup_SDL
+    call SDL_DestroyWindow
+
+    .L_cleanup_SDL:
+    call SDL_Quit
+    mov rax, 1
+    add rsp, SHADOW_SPACE
+    pop rbp
     ret
+;======================================== END cleanup ==========================================
 
-check_vulkan_error:
-    sub rsp, 0x28 ; 0x20 shadow space, 0x8 alignment to 16 bytes
-    test rax, rax
-    jnz .L_vulkan_error
-    mov eax, 1
-    jmp .L_check_vulkan_error_end
-.L_vulkan_error:
-    lea rcx, [log_vulkan_error]
-    mov rdx, rax
-    call SDL_Log
-    mov eax, 0
-.L_check_vulkan_error_end:
-    add rsp, 0x28
-    ret
-
-; rcx -> Environment*
+;========================== init_sdl - arg1: Environment* - ret: bool ==========================
 init_sdl:
     push rbp
     mov rbp, rsp
@@ -165,6 +227,10 @@ init_sdl:
     test eax, eax
     jz .L_sdl_init_fail
 
+    lea rcx, [is_sdl]
+    call SDL_Log
+
+
     ; SDL_CreateWindow
     lea rcx, [window_title]
     mov rdx, width
@@ -176,16 +242,127 @@ init_sdl:
     call check_sdl_error
     test eax, eax
     jz .L_sdl_init_fail
+
+    lea rcx, [is_window]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + ENV_WINDOW]
+    call SDL_Log
+
+    ; success:
     mov rax, 1
     jmp .L_sdl_init_end
 
-.L_sdl_init_fail:
+    .L_sdl_init_fail:
     mov rax, 0
 
-.L_sdl_init_end:
+    .L_sdl_init_end:
     add rsp, SHADOW_SPACE
     pop rbp
     ret
+;======================================= END init_sdl ==========================================
+
+;======================== init_vulkan - arg1: Environment* - ret: bool =========================
+init_vulkan:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx ; move arg1 to shadow space
+
+    ; rcx already contains Env* ptr
+    call create_vk_instance
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    lea rcx, [is_vki]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + ENV_VK_INSTANCE]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10] ; arg1 - Env*
+    call create_vk_surface
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    lea rcx, [is_vks]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + ENV_SURFACE]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10] ; arg1 - Env*
+    call pick_vk_physical_device
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    lea rcx, [is_phd]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + ENV_VK_PHDEVICE]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10] ; arg1 - Env*
+    call create_vk_device
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    lea rcx, [is_vkd]
+    mov rdx, [rbp + 0x10]
+    mov rdx, [rdx + ENV_VK_DEVICE]
+    call SDL_Log
+
+
+    ; success
+    mov rax, 1
+    jmp .L_init_vulkan_end
+
+    .L_init_vulkan_fail:
+    mov rax, 0
+    .L_init_vulkan_end:
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+;====================================== END init_vulkan ======================================== 
+
+;================ check_sdl_error - takes result from last SDL call - ret: bool ================
+check_sdl_error:
+    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
+    test rax, rax
+    jz .L_sdl_error
+    mov eax, 1                  ; no error
+    jmp .L_check_sdl_error_end
+    
+    .L_sdl_error:
+    call SDL_GetError
+    lea rcx, [log_sdl_error]
+    mov rdx, rax
+    call SDL_Log
+    mov eax, 0                  ; error
+
+    .L_check_sdl_error_end:
+    add rsp, 0x8 + SHADOW_SPACE
+    ret
+;=================================== END check_sdl_error =======================================
+
+;============= check_vulkan_error - takes result from last Vulkan call - ret: bool =============
+check_vulkan_error:
+    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
+    test rax, rax
+    jnz .L_vulkan_error
+    mov eax, 1                  ; no error
+    jmp .L_check_vulkan_error_end
+    
+    .L_vulkan_error:
+    lea rcx, [log_vulkan_error]
+    mov rdx, rax
+    call SDL_Log
+    mov eax, 0                  ; error
+    
+    .L_check_vulkan_error_end:
+    add rsp, 0x28
+    ret
+;================================= END check_vulkan_error ====================================== 
 
 ; rcx -> Environment*
 create_vk_instance:
@@ -329,6 +506,7 @@ pick_vk_physical_device:
     mov rcx, [rbp + 0x10]      ; environment
     mov rdx, [rdi + rsi * 0x8] ; device
     call is_device_suitable
+
     test rax, rax
     jnz .L_device_found
     inc esi
@@ -483,67 +661,7 @@ create_vk_device:
     pop rbp
     ret
 
-init:
-    push rbp
-    mov rbp, rsp
-    sub rsp, SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32 + uint32 + VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo + SHADOW_SPACE
-    
-    ; move arg (Environment*) to shadow space
-    mov [rbp + 0x10], rcx
-    
-    ;mov rcx, [rbp + 0x10] its already in rcx
-    call init_sdl
-    test rax, rax
-    jz .L_init_fail
-    
-    lea rcx, [init_sdl_success]
-    call SDL_Log
 
-    mov rcx, [rbp + 0x10]
-    call create_vk_instance
-    test rax, rax
-    jz .L_init_fail
-
-    lea rcx, [create_vki_success]
-    call SDL_Log
-
-    mov rcx, [rbp + 0x10]
-    call create_vk_surface
-    test rax, rax
-    jz .L_init_fail
- 
-    lea rcx, [create_vks_success]
-    call SDL_Log
-
-    mov rcx, [rbp + 0x10]
-    call pick_vk_physical_device
-    test rax, rax
-    jz .L_init_fail
-
-    lea rcx, [pick_phd_success]
-    call SDL_Log
-
-    mov rcx, [rbp + 0x10]
-    call create_vk_device
-    test rax, rax
-    jz .L_init_fail
-
-    lea rcx, [create_vkd_success]
-    call SDL_Log
-
-    jmp .L_init_success
-
-.L_init_fail:
-    mov eax, 0
-    jmp .L_init_end
-
-.L_init_success:
-    mov eax, 1
-
-.L_init_end:
-    add rsp, SHADOW_SPACE
-    pop rbp
-    ret
 
 print_device_info:
     push rbp
@@ -849,6 +967,14 @@ section '.data' data readable writeable
     create_vks_success db "Successfully created vulkan surface", 0
     pick_phd_success db "Successfully picked a physical device", 0
     create_vkd_success db "Successfully created vulkan device", 0
+
+    is_sdl           db "Initialized SDL...", 0
+    is_window        db "Initialized SDL window [0x%llX]...", 0
+    is_vki           db "Initialized Vulkan instance [0x%llX]...", 0
+    is_vks           db "Initialized Vulkan surface [0x%llX]...", 0
+    is_phd           db "Initialized Vulkan physical device [0x%llX]...", 0
+    is_vkd           db "Initialized Vulkan device [0x%llX]...", 0
+    is_everything    db "Successfully initialized everything", 0
 
     devprops_api     db "devprops apiVersion: 0x%X", 0
     devprops_driver  db "devprops driverVersion: 0x%X", 0
