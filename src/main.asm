@@ -33,6 +33,9 @@ height = 720
 SDL_INIT_VIDEO = 0x20
 SDL_WINDOW_VULKAN = 0x0000000010000000
 
+TRUE = 1
+FALSE = 0
+
 SHADOW_SPACE = 0x20
 
 f1_0 = 0x3f800000
@@ -295,7 +298,7 @@ init_vulkan:
 
 
     mov rcx, [rbp + 0x10] ; arg1 - Env*
-    call pick_vk_physical_device
+    call select_vk_physical_device
     test rax, rax
     jz .L_init_vulkan_fail
 
@@ -367,7 +370,7 @@ check_vulkan_error:
     ret
 ;================================= END check_vulkan_error ====================================== 
 
-; rcx -> Environment*
+;==================== create_vk_instance - arg1: Environment* - ret: bool ======================
 create_vk_instance:
     push rbp
     mov rbp, rsp
@@ -411,8 +414,8 @@ create_vk_instance:
     ; call vkCreateInstance
     lea rcx,  [rbp - 0x70]                   ; createInfo = &createInfo
     mov rdx, 0                               ; Allocator = NULL
-    mov r9,   [rbp + 0x10]
-    lea r8,   [r9 + 0x10]                    ; instance = &instance
+    mov r9,   [rbp + 0x10]                   ; env* ptr
+    lea r8,   [r9  + 0x10]                   ; instance = &instance
     call vkCreateInstance
     call check_vulkan_error
     test rax, rax
@@ -422,13 +425,14 @@ create_vk_instance:
     mov rax, 1
     jmp .L_create_vk_instance_end
 
-.L_create_vk_instance_fail:
+    .L_create_vk_instance_fail:
     mov rax, 0
 
-.L_create_vk_instance_end:
+    .L_create_vk_instance_end:
     add rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE
     pop rbp
     ret
+;================================== END create_vk_instance =====================================
 
 ;===================== create_vk_surface - arg1: Environment* - ret: bool ======================
 create_vk_surface:
@@ -460,96 +464,82 @@ create_vk_surface:
     ret
 ;=================================== END create_vk_surface =====================================
 
-; rcx -> Environment*
-pick_vk_physical_device:
+;================= select_vk_physical_device - arg1: Environment* - ret: bool ==================
+select_vk_physical_device:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64
+    push rsi    ; for loop, pop at the end
+    push rdi 
+    sub rsp, 0x10 + SHADOW_SPACE ; uint32 count
 
-    mov [rbp + 0x10], rcx
+    mov [rbp + 0x10], rcx ; save Environment* ptr
 
-    ; call vkEnumeratePhysicalDevices to count devices
-    mov rax, rcx
-    mov rcx, [rax + 0x10] ; Environment->instance
-    lea rdx, [rbp - 0x04] ; &device_count
-    mov r8, 0x0
+    mov rcx, [rcx + ENV_VK_INSTANCE] ; arg1: VkInstance
+    lea rdx, [rbp - 0x04]            ; arg2: &count
+    mov r8,  0                       ; arg3: NULL
     call vkEnumeratePhysicalDevices
     call check_vulkan_error
     test rax, rax
-    jz .L_pick_physical_device_fail
+    jz .L_select_vk_physical_device_fail_no_free
 
-    ; malloc space for devices amount
-    mov ecx, [rbp - 0x04] 
-    shl ecx, 0x03 ; device_count << 3 (same as device_count * 8)
+    mov ecx, [rbp - 0x04]            ; load count
+    test ecx, ecx                    ; if count == 0 -> no GPU found
+    jz .L_select_vk_physical_device_fail_no_free
+
+    shl ecx, 3                       ; arg1: count << 3 (count * 8), 
     call malloc
     test rax, rax
-    jz .L_pick_physical_device_malloc_fail
-    mov [rbp - 0x10], rax
+    jz .L_select_vk_physical_device_fail
+    mov rdi, rax                     ; save the malloc'd ptr in rdi
 
-    ; read in devices
-    mov r8,  [rbp + 0x10]
-    mov rcx, [r8 + 0x10]  ; Environment->instance
-    lea rdx, [rbp - 0x04] ; &device_count
-    mov r8, rax           ; ptr to devices from malloc
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_INSTANCE] ; arg1: VkInstance
+    lea rdx, [rbp - 0x04]            ; arg2: &count
+    mov r8,  rdi                     ; arg3: malloc'd ptr
     call vkEnumeratePhysicalDevices
     call check_vulkan_error
     test rax, rax
-    jz .L_pick_physical_device_fail
+    jz .L_select_vk_physical_device_fail
 
-    push rsi ; push nonvolatile registers into the stack for restoring
-    push rdi
-    sub rsp, 0x20 ; shadow space because we pushed registers onto the stack
-    mov esi, 0    ; i = 0
-    mov rdi, [rbp - 0x10] ; malloc device ptr
-.L_device_loop:
-    cmp esi, [rbp - 0x04] ; device_count
-    jge .L_device_loop_end
-
-    ;call print_device_info
-
-    ;mov rcx, [rdi + rsi * 0x8]
-    mov rcx, [rbp + 0x10]      ; environment
-    mov rdx, [rdi + rsi * 0x8] ; device
+    mov rsi, 0                       ; malloc'd ptr     
+    .L_select_vk_physical_device_loop_begin:
+    ; count already checked for 0, no need to check at the beginning
+    mov rcx, [rbp + 0x10]            ; arg1: Env* ptr
+    mov rdx, [rdi + rsi * 0x8]       ; arg2: i'th device
     call is_device_suitable
+    test rax, rax                    ; if (is_device_suitable(env, device)) break;
+    jnz .L_select_vk_physical_device_loop_end
 
-    test rax, rax
-    jnz .L_device_found
-    inc esi
-    jmp .L_device_loop
+    inc rsi
+    cmp esi, [rbp - 0x4]             ; if (i >= count) goto fail (looped through all and not found)
+    jge .L_select_vk_physical_device_fail
+    jmp .L_select_vk_physical_device_loop_begin
 
-.L_device_loop_end:
-    add rsp, 0x20 ; restore shadow space from push rsi and rdi
-    pop rdi
-    pop rsi
-    lea rcx, [no_suitable_dev]
-    call SDL_Log
-    jmp .L_pick_physical_device_fail
-
-.L_device_found:
-    mov rax, [rbp + 0x10]      ; Environment*
-    mov rcx, [rdi + rsi * 0x8] ; ptr to suitable physical device
-    add rsp, 0x20 ; restore shadow space from push rsi and rdi
-    pop rdi
-    pop rsi       ; restore nonvolatile register values
-
-    mov [rax + 0x18], rcx ; Environment->physicalDevice = physicalDevices[i]
-
-    ;sucess
-    mov rcx, [rbp - 0x10] ; no need to test, if malloc failed we wouldnt be here
+    .L_select_vk_physical_device_loop_end:
+    mov rdx, [rdi + rsi * 0x8]      ; device
+    mov rax, [rbp + 0x10]           ; env* ptr
+    mov [rax + ENV_VK_PHDEVICE], rdx; env->phdevice = phdevices[i]
+    mov rcx, rdi                    ; ptr to malloc'd memory
     call free
+
+    ; success:
     mov rax, 1
-    jmp .L_pick_vk_physical_device_end
+    jmp .L_select_vk_physical_device_end
 
-.L_pick_physical_device_fail:
-    mov rcx, [rbp - 0x10]
+    .L_select_vk_physical_device_fail:
+    mov rcx, rdi                    ; ptr to malloc'd memory
     call free
-.L_pick_physical_device_malloc_fail:    
+
+    .L_select_vk_physical_device_fail_no_free:
     mov rax, 0
 
-.L_pick_vk_physical_device_end:
+    .L_select_vk_physical_device_end:
     add rsp, 0x10 + SHADOW_SPACE
+    pop rdi
+    pop rsi
     pop rbp
     ret
+;=============================== END select_vk_physical_device =================================
 
 ; rcx -> Environment*
 create_vk_device:
@@ -966,6 +956,7 @@ section '.data' data readable writeable
     log_int          db "%d", 0
     log_ptr          db "0x%llX", 0
     log_ext_name     db "Device Extension: %s", 0
+    log_debug        db "Here", 0
 
     init_sdl_success db "Succesfully initialized SDL", 0
     create_vki_success db "Successfully created vulkan instance", 0
