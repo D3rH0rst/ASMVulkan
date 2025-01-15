@@ -80,6 +80,8 @@ start:
     mov rbp, rsp
     sub rsp, ENV_SZ + 0x10 + SHADOW_SPACE ; ENV_SZ(0x40) -> Environment, 0x10 -> return value, 0x20 -> Shadow Space
 
+    mov DWORD [rbp - ENV_SZ - 0x04], 1 ; store default return value
+
     lea rcx, [rbp - ENV_SZ] ; Environment
     call init
     test eax, eax
@@ -330,45 +332,6 @@ init_vulkan:
     pop rbp
     ret
 ;====================================== END init_vulkan ======================================== 
-
-;================ check_sdl_error - takes result from last SDL call - ret: bool ================
-check_sdl_error:
-    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
-    test rax, rax
-    jz .L_sdl_error
-    mov eax, 1                  ; no error
-    jmp .L_check_sdl_error_end
-    
-    .L_sdl_error:
-    call SDL_GetError
-    lea rcx, [log_sdl_error]
-    mov rdx, rax
-    call SDL_Log
-    mov eax, 0                  ; error
-
-    .L_check_sdl_error_end:
-    add rsp, 0x8 + SHADOW_SPACE
-    ret
-;=================================== END check_sdl_error =======================================
-
-;============= check_vulkan_error - takes result from last Vulkan call - ret: bool =============
-check_vulkan_error:
-    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
-    test rax, rax
-    jnz .L_vulkan_error
-    mov eax, 1                  ; no error
-    jmp .L_check_vulkan_error_end
-    
-    .L_vulkan_error:
-    lea rcx, [log_vulkan_error]
-    mov rdx, rax
-    call SDL_Log
-    mov eax, 0                  ; error
-    
-    .L_check_vulkan_error_end:
-    add rsp, 0x28
-    ret
-;================================= END check_vulkan_error ====================================== 
 
 ;==================== create_vk_instance - arg1: Environment* - ret: bool ======================
 create_vk_instance:
@@ -656,7 +619,93 @@ create_vk_device:
     pop rbp
     ret
 
+;============ is_device_suitable - arg1: Environment* - arg2: VkDevice - ret: bool =============
+is_device_suitable:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE ; indices
 
+    mov [rbp + 0x10], rcx                 ; save arg1
+    mov [rbp + 0x18], rdx                 ; save arg2
+
+    ; rcx already has env*
+    ; rdx already has VkDevice
+    lea r8, [rbp - 0x08]                  ; &indices
+    call find_queue_families
+    test rax, rax
+    jz .L_is_device_suitable_false
+
+    ; check if either index is unassigned (-1)
+    mov eax, [rbp - 0x08 + 0x00]          ; graphicsFamily
+    or  eax, [rbp - 0x08 + 0x04]          ; eax = graphicsFamily | presentFamily
+    test eax, eax                         
+    js .L_is_device_suitable_false        ; js -> jump if sign bit is set (indicates -1)
+
+    mov rcx, [rbp + 0x18]                 ; load VkDevice
+    call check_device_extension_support
+    test rax, rax
+    jz .L_is_device_suitable_false
+
+    ; true:
+    mov rax, TRUE
+    jmp .L_is_device_suitable_end
+
+    .L_is_device_suitable_false:
+    mov rax, FALSE
+    .L_is_device_suitable_end:
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;================================== END is_device_suitable =====================================
+
+
+
+
+
+
+
+
+
+
+
+
+;; rcx -> Environment ; rdx -> VkPhysicalDevice
+;is_device_suitable:
+;    push rbp
+;    mov rbp, rsp
+;    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
+;    
+;    mov [rbp + 0x10], rcx ; Environment*
+;    mov [rbp + 0x18], rdx ; VkPhsyicalDevice*
+;
+;    ;rcx has Environment
+;    ;rdx has VkPhysicalDevice
+;    lea r8, [rbp - 0x10] ; &indices
+;    call find_queue_families
+;    test rax, rax
+;    jz .L_device_suitable_false
+;    ; check here if both families have valid (!= -1) indices, if yes, return true
+;    mov ecx, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
+;    mov edx, [rbp - 0x10 + 0x04] ; indices->presentFamily
+;    or ecx, edx           ; is either -1?
+;    cmp ecx, -1
+;    je .L_device_suitable_false
+;
+;    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice*
+;    call check_device_extension_support
+;    test rax, rax
+;    jz .L_device_suitable_false
+;.L_device_suitable_true:
+;    mov rax, 1
+;    jmp .L_device_suitable_end
+;
+;.L_device_suitable_false:
+;    mov rax, 0
+;
+;.L_device_suitable_end:
+;    add rsp, 0x10 + SHADOW_SPACE
+;    pop rbp
+;    ret
 
 print_device_info:
     push rbp
@@ -691,44 +740,6 @@ print_device_info:
     call SDL_Log
     
     add rsp, 0x340 + SHADOW_SPACE
-    pop rbp
-    ret
-
-; rcx -> Environment ; rdx -> VkPhysicalDevice
-is_device_suitable:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
-    
-    mov [rbp + 0x10], rcx ; Environment*
-    mov [rbp + 0x18], rdx ; VkPhsyicalDevice*
-
-    ;rcx has Environment
-    ;rdx has VkPhysicalDevice
-    lea r8, [rbp - 0x10] ; &indices
-    call find_queue_families
-    test rax, rax
-    jz .L_device_suitable_false
-    ; check here if both families have valid (!= -1) indices, if yes, return true
-    mov ecx, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
-    mov edx, [rbp - 0x10 + 0x04] ; indices->presentFamily
-    or ecx, edx           ; is either -1?
-    cmp ecx, -1
-    je .L_device_suitable_false
-
-    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice*
-    call check_device_extension_support
-    test rax, rax
-    jz .L_device_suitable_false
-.L_device_suitable_true:
-    mov rax, 1
-    jmp .L_device_suitable_end
-
-.L_device_suitable_false:
-    mov rax, 0
-
-.L_device_suitable_end:
-    add rsp, 0x10 + SHADOW_SPACE
     pop rbp
     ret
 
@@ -913,6 +924,45 @@ check_device_extension_support:
     add rsp, 0x10 + SHADOW_SPACE
     pop rbp
     ret
+
+;================ check_sdl_error - takes result from last SDL call - ret: bool ================
+check_sdl_error:
+    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
+    test rax, rax
+    jz .L_sdl_error
+    mov eax, 1                  ; no error
+    jmp .L_check_sdl_error_end
+    
+    .L_sdl_error:
+    call SDL_GetError
+    lea rcx, [log_sdl_error]
+    mov rdx, rax
+    call SDL_Log
+    mov eax, 0                  ; error
+
+    .L_check_sdl_error_end:
+    add rsp, 0x8 + SHADOW_SPACE
+    ret
+;=================================== END check_sdl_error =======================================
+
+;============= check_vulkan_error - takes result from last Vulkan call - ret: bool =============
+check_vulkan_error:
+    sub rsp, 0x8 + SHADOW_SPACE ; 0x20 shadow space, 0x8 alignment to 16 bytes
+    test rax, rax
+    jnz .L_vulkan_error
+    mov eax, 1                  ; no error
+    jmp .L_check_vulkan_error_end
+    
+    .L_vulkan_error:
+    lea rcx, [log_vulkan_error]
+    mov rdx, rax
+    call SDL_Log
+    mov eax, 0                  ; error
+    
+    .L_check_vulkan_error_end:
+    add rsp, 0x28
+    ret
+;================================= END check_vulkan_error ====================================== 
 
 
 print_queue_family_info:
