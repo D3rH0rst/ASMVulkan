@@ -117,6 +117,9 @@ init:
     test rax, rax
     jz .L_init_fail
 
+    mov rcx, is_everything
+    call SDL_Log
+
     ; success
     mov rax, 1
     jmp .L_init_end
@@ -227,7 +230,7 @@ init_sdl:
     test eax, eax
     jz .L_sdl_init_fail
 
-    lea rcx, [is_sdl]
+    mov rcx, is_sdl
     call SDL_Log
 
 
@@ -243,7 +246,7 @@ init_sdl:
     test eax, eax
     jz .L_sdl_init_fail
 
-    lea rcx, [is_window]
+    mov rcx, is_window
     mov rdx, [rbp + 0x10]
     mov rdx, [rdx + ENV_WINDOW]
     call SDL_Log
@@ -274,7 +277,7 @@ init_vulkan:
     test rax, rax
     jz .L_init_vulkan_fail
 
-    lea rcx, [is_vki]
+    mov rcx, is_vki
     mov rdx, [rbp + 0x10]
     mov rdx, [rdx + ENV_VK_INSTANCE]
     call SDL_Log
@@ -285,7 +288,7 @@ init_vulkan:
     test rax, rax
     jz .L_init_vulkan_fail
 
-    lea rcx, [is_vks]
+    mov rcx, is_vks
     mov rdx, [rbp + 0x10]
     mov rdx, [rdx + ENV_SURFACE]
     call SDL_Log
@@ -296,7 +299,7 @@ init_vulkan:
     test rax, rax
     jz .L_init_vulkan_fail
 
-    lea rcx, [is_phd]
+    mov rcx, is_phd
     mov rdx, [rbp + 0x10]
     mov rdx, [rdx + ENV_VK_PHDEVICE]
     call SDL_Log
@@ -307,7 +310,7 @@ init_vulkan:
     test rax, rax
     jz .L_init_vulkan_fail
 
-    lea rcx, [is_vkd]
+    mov rcx, is_vkd
     mov rdx, [rbp + 0x10]
     mov rdx, [rdx + ENV_VK_DEVICE]
     call SDL_Log
@@ -370,34 +373,35 @@ create_vk_instance:
     mov rbp, rsp
     sub rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32
 
-    mov [rbp + 0x10], rcx
+    mov [rbp + 0x10], rcx ; save Environment* ptr
+
+    ; zeroinit applicationInfo
+    lea rcx, [rbp - 0x30]  ; a1 = &applicationInfo
+    mov edx, 0             ; a2 = 0
+    mov r8,  0x30          ; a3 = sizeof(VkApplicationInfo)
+    call memset
 
     ; set up VkApplicationInfo
-    mov DWORD [rbp - 0x30 + 0x00], 0x0       ; .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO
-    mov QWORD [rbp - 0x30 + 0x08], 0x0       ; .pNext = NULL
-    
-    lea rax,  [vk_app_name]
-    mov       [rbp - 0x30 + 0x10], rax       ; .pApplicationName = "Vulkan App"
-    
-    mov DWORD [rbp - 0x30 + 0x18], 0x400000  ; .applicationVersion = VK_MAKE_VERSION(1, 0, 0)
-    
-    lea rax,  [vk_engine_name]
-    mov       [rbp - 0x30 + 0x20], rax       ; .pEngineName = "No Engine"
-
-    mov DWORD [rbp - 0x30 + 0x28], 0x400000  ; .engineVersion = VK_MAKE_VERSION(1, 0, 0)
+    ; VK_STRUCTURE_TYPE_APPLICATION_INFO is already 0 so no need to set .sType
     mov DWORD [rbp - 0x30 + 0x2C], 0x403000  ; .apiVersion = VK_API_VERSION_1_3
+
+    ; zeroinit createInfo
+    lea rcx, [rbp - 0x70]  ; a1 = &createInfo
+    mov edx, 0             ; a2 = 0
+    mov r8,  0x70          ; a3 = sizeof(VkInstanceCreateInfo)
+    call memset
 
     ; set up VkInstanceCreateInfo
     mov DWORD [rbp - 0x70 + 0x00], 0x1       ; .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
-    mov QWORD [rbp - 0x70 + 0x08], 0x0       ; .pNext = NULL
-    mov DWORD [rbp - 0x70 + 0x10], 0x0       ; .flags = 0
 
     lea rax,  [rbp - 0x30]
     mov       [rbp - 0x70 + 0x18], rax       ; .pApplicationInfo = &applicationInfo (rbp - 0x30)
 
-    mov DWORD [rbp - 0x70 + 0x20], 0x0       ; .enabledLayerCount = 0
-    mov QWORD [rbp - 0x70 + 0x28], 0x0       ; .ppEnabledLayerNames = NULL
+    ; could use at some point to enable debug layers
+    ;mov DWORD [rbp - 0x70 + 0x20], 0x0       ; .enabledLayerCount = 0
+    ;mov QWORD [rbp - 0x70 + 0x28], 0x0       ; .ppEnabledLayerNames = NULL
 
+    ; get the instance extensions needed
     lea rcx,  [rbp - 0x74]                   ; &count
     call SDL_Vulkan_GetInstanceExtensions
     mov ecx,  [rbp - 0x74]
@@ -426,18 +430,18 @@ create_vk_instance:
     pop rbp
     ret
 
-; rcx -> Environment*
+;===================== create_vk_surface - arg1: Environment* - ret: bool ======================
 create_vk_surface:
     push rbp
     mov rbp, rsp
     sub rsp, SHADOW_SPACE
 
     ; create surface
-    mov rax, rcx          ; Environment*
-    mov rcx, [rax + 0x00] ; a1 = Environment->window
-    mov rdx, [rax + 0x10] ; a2 = Environment->instance
-    mov r8,  0            ; a3 = NULL
-    lea r9,  [rax + 0x08] ; a4 = &Environment->surface
+    mov rax, rcx                     ; Environment*
+    mov rcx, [rax + ENV_WINDOW]      ; a1 = Environment->window
+    mov rdx, [rax + ENV_VK_INSTANCE] ; a2 = Environment->instance
+    mov r8,  0                       ; a3 = NULL
+    lea r9,  [rax + ENV_SURFACE]     ; a4 = &Environment->surface
     call SDL_Vulkan_CreateSurface
     call check_sdl_error
     test eax, eax
@@ -447,13 +451,14 @@ create_vk_surface:
     mov rax, 1
     jmp .L_create_vk_surface_end
 
-.L_create_vk_surface_fail:
+    .L_create_vk_surface_fail:
     mov rax, 0
 
-.L_create_vk_surface_end:
+    .L_create_vk_surface_end:
     add rsp, SHADOW_SPACE
     pop rbp
     ret
+;=================================== END create_vk_surface =====================================
 
 ; rcx -> Environment*
 pick_vk_physical_device:
