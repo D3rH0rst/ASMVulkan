@@ -623,7 +623,7 @@ create_vk_device:
     ret
 ;=================================== END create_vk_device ======================================
 
-;============ is_device_suitable - arg1: Environment* - arg2: VkDevice - ret: bool =============
+;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
     push rbp
     mov rbp, rsp
@@ -642,7 +642,7 @@ is_device_suitable:
     ; check if either index is unassigned (-1)
     mov eax, [rbp - 0x08 + 0x00]          ; graphicsFamily
     or  eax, [rbp - 0x08 + 0x04]          ; eax = graphicsFamily | presentFamily
-    test eax, eax                         
+    test eax, eax  ; or already sets flags, not needed                       
     js .L_is_device_suitable_false        ; js -> jump if sign bit is set (indicates -1)
 
     mov rcx, [rbp + 0x18]                 ; load VkDevice
@@ -662,9 +662,101 @@ is_device_suitable:
     ret
 ;================================== END is_device_suitable =====================================
 
+;======== find_queue_families - arg1: Environment* - arg2: VkPhysicalDevice - arg3: QueueFamilyIndices* - ret: bool ========
+find_queue_families:
+    push rbp
+    mov rbp, rsp
+    push rsi   ; loop vars, popped at the end of the function
+    push rdi
+    push r12
+    sub rsp, 0x10 + SHADOW_SPACE + 0x08 ; 0x8 alignment
 
+    mov [rbp + 0x10], rcx        ; save env* ptr
+    mov [rbp + 0x18], rdx        ; save VkPhysicalDevice
+    mov [rbp + 0x20], r8         ; save QueueFamilyIndices* ptr#
 
+    mov QWORD [r8], -1           ; set both QueueFamilyIndices to -1
+    mov DWORD [rbp - 0x08], FALSE; presentSupport = 0
 
+    ; call vkGetPhysicalDeviceQueueFamilyProperties to get the count
+    mov rcx, rdx                 ; arg1: VkPhysicalDevice
+    lea rdx, [rbp - 0x10]        ; arg2: &queueFamilyCount
+    mov r8,  0                   ; arg3: NULL
+    call vkGetPhysicalDeviceQueueFamilyProperties
+    mov eax, [rbp - 0x010]       
+    test eax, eax                ; if queueFamilyCount == 0 -> fail
+    jz .L_find_queue_families_fail_no_free
+
+    mov ecx, 0x18        
+    imul ecx, eax                ; arg1: sizeof(VkQueueFamilyProperties) * queueFamilyCount
+    call malloc
+    test rax, rax
+    jz .L_find_queue_families_fail_no_free
+    mov rdi, rax                 ; rdi has the base ptr to VkQueueFamilyProperties
+
+    ; call vkGetPhysicalDeviceQueueFamilyProperties to fill the ptr
+    mov rcx, [rbp + 0x18]        ; arg1: VkPhysicalDevice
+    lea rdx, [rbp - 0x10]        ; arg2: &queueFamilyCount
+    mov r8,  rdi                 ; arg3: mallocd ptr
+    call vkGetPhysicalDeviceQueueFamilyProperties
+
+    mov rsi, 0                   ; rsi <- loop counter (i)
+    mov r12, [rbp + 0x20]        ; load indices* into r12
+
+    .L_find_queue_families_loop_begin:
+    mov rax, rsi
+    imul rax, 0x18               ; i * sizeof(VkQueueFamilyProperties) (mul implicitly uses rax as the source operand -> mul rax, 0x18)
+    add rax, rdi                 ; rax = baseptr + i * sizeof(VkQueueFamilyProperties)
+
+    test DWORD [rax + 0x00], 0x1 ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
+    jz .L_find_queue_families_skip_graphics_family
+    mov DWORD [r12 + 0x00], esi  ; indices->graphicsFamily = i
+
+    .L_find_queue_families_skip_graphics_family:
+    mov rcx, [rbp + 0x18]        ; arg1: VkPhsyicalDevice
+    mov edx, esi                 ; arg2: i 
+    mov r9,  [rbp + 0x10]
+    mov r8,  [r9  + ENV_SURFACE] ; arg3: env->VkSurface
+    lea r9,  [rbp - 0x08]        ; arg4: &presentSupport
+    call vkGetPhysicalDeviceSurfaceSupportKHR
+
+    mov eax, [rbp - 0x08]
+    test eax, eax                ; if (!presentSupport) skip to complete check
+    jz .L_find_queue_families_skip_present_family
+    mov DWORD [r12 + 0x04], esi  ; indices->presentFamily = i
+
+    .L_find_queue_families_skip_present_family:
+    mov eax, [r12 + 0x00]        ; graphicsFamily
+    or  eax, [r12 + 0x04]        ; eax = graphicsFamily | presentFamily
+    test eax, eax                ; restart loop if sign bit is set (js -> jump sign)
+    jns .L_find_queue_families_loop_end
+
+    inc rsi
+    cmp rsi, [rbp - 0x10]
+    jl .L_find_queue_families_loop_begin
+
+    .L_find_queue_families_loop_end:
+    mov rcx, rdi                 ; rdi <- ptr to malloc'd memory
+    call free
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_find_queue_families_end
+
+    .L_find_queue_families_fail:
+    mov rcx, rdi                  ; rdi <- ptr to malloc'd memory
+    call free
+    .L_find_queue_families_fail_no_free:
+    mov rax, FALSE
+
+    .L_find_queue_families_end:
+    add rsp, 0x10 + SHADOW_SPACE + 0x08 ; <- alignment
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbp
+    ret
+;================================================ END find_queue_families ==================================================
 
 
 print_device_info:
@@ -704,109 +796,110 @@ print_device_info:
     ret
 
 ; rcx -> Environment*, rdx -> VkPhysicalDevice, r8 -> QueueFamilyIndices*
-find_queue_families:
-    push rbp
-    mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64 + SHADOW_SPACE
-
-    mov [rbp + 0x10], rcx ; Environment*
-    mov [rbp + 0x18], rdx ; VkPhysicalDevice
-    mov [rbp + 0x20], r8  ; QueueFamilyIndices
-
-    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice
-    lea rdx, [rbp - 0x04] ; &count
-    mov r8, 0x0
-    call vkGetPhysicalDeviceQueueFamilyProperties
-
-    ; allocate space for queuefamilies
-    mov ecx, [rbp - 0x04] ; count
-    imul ecx, 0x18 ; size of queuefamilyproperties
-    call malloc
-    test rax, rax
-    jz .L_find_queue_families_malloc_fail
-    mov [rbp - 0x10], rax
-    
-    ; read in the queue families
-    mov rcx, [rbp + 0x18]
-    lea rdx, [rbp - 0x04]
-    mov r8, rax
-    call vkGetPhysicalDeviceQueueFamilyProperties
-
-    ;mov DWORD [rbp - 0x08], -1 ; -1 as default return value
-    ; initialize indices to sentinel value
-    mov rax,  [rbp + 0x20] ; QueueFamilyIndices*
-    mov DWORD [rax + 0x00], -1  ; indices->graphicsFamily = -1
-    mov DWORD [rax + 0x04], -1  ; indices->presentFamily  = -1
-    
-    ; save old registers and allocate shadow space
-    push rdi
-    push rsi
-    sub rsp, 0x20
-
-    mov esi, 0
-    mov rdi, [rbp - 0x10]
-
-.L_family_loop:
-    cmp esi, [rbp - 0x04]
-    jge .L_family_loop_end
-    ; check if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
-    mov rcx, rsi
-    imul rcx, 0x18
-    add rcx, rdi
-    ;lea rcx, [rdi + rsi * 0x18]
-    mov edx, [rcx + 0x0] ; edx contains .queueFlags
-    and edx, 0x1         ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
-    test edx, edx
-    jz .L_check_present_family
-    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
-    mov DWORD [rax + 0x00], esi  ; indices->graphicsFamily = i
-.L_check_present_family:
-    mov rcx, [rbp + 0x18] ; a1 = device
-    mov edx, esi          ; a2 = i
-    mov rax, [rbp + 0x10] ; Environment
-    mov r8,  [rax + 0x08] ; a3 = Environment->surface
-    lea r9,  [rbp - 0x08]
-    call vkGetPhysicalDeviceSurfaceSupportKHR
-    mov eax, [rbp - 0x08]
-    test eax, eax
-    jz .L_family_loop_check
-    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
-    mov DWORD [rax + 0x04], esi  ; indices->presentFamily = i
-
-.L_family_loop_check:
-    ; check here if both families have valid (!= -1) indices, if yes, break
-    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
-    mov ecx, [rax + 0x00] ; indices->graphicsFamily
-    mov edx, [rax + 0x04] ; indices->presentFamily
-    or ecx, edx           ; is either -1?
-    cmp ecx, -1
-    je .L_family_loop_inc
-    jmp .L_family_loop_end
-
-.L_family_loop_inc:
-    inc rsi
-    jmp .L_family_loop
-
-.L_family_loop_end:
-    add rsp, 0x20 ; restore nonvolatile registers
-    pop rsi
-    pop rdi
-    
-    ;sucess:
-    mov rcx, [rbp - 0x10] ; malloc'd memory
-    call free
-    mov rax, 1
-    jmp .L_find_queue_families_end
-
-.L_find_queue_families_fail:
-    call free
-.L_find_queue_families_malloc_fail:
-    mov rax, 0
-
-.L_find_queue_families_end:
-    add rsp, 0x10 + SHADOW_SPACE
-    pop rbp
-    ret
+;find_queue_families:
+;    push rbp
+;    mov rbp, rsp
+;    sub rsp, 0x10 + SHADOW_SPACE ; uint32 + uint64 + SHADOW_SPACE
+;
+;    mov [rbp + 0x10], rcx ; Environment*
+;    mov [rbp + 0x18], rdx ; VkPhysicalDevice
+;    mov [rbp + 0x20], r8  ; QueueFamilyIndices
+;
+;    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice
+;    lea rdx, [rbp - 0x04] ; &count
+;    mov r8, 0x0
+;    call vkGetPhysicalDeviceQueueFamilyProperties
+;
+;    ; allocate space for queuefamilies
+;    mov ecx, [rbp - 0x04] ; count
+;    imul ecx, 0x18 ; size of queuefamilyproperties
+;    call malloc
+;    test rax, rax
+;    jz .L_find_queue_families_malloc_fail
+;    mov [rbp - 0x10], rax
+;    
+;    ; read in the queue families
+;    mov rcx, [rbp + 0x18]
+;    lea rdx, [rbp - 0x04]
+;    mov r8, rax
+;    call vkGetPhysicalDeviceQueueFamilyProperties
+;
+;    ;mov DWORD [rbp - 0x08], -1 ; -1 as default return value
+;    ; initialize indices to sentinel value
+;    mov rax,  [rbp + 0x20] ; QueueFamilyIndices*
+;    mov DWORD [rax + 0x00], -1  ; indices->graphicsFamily = -1
+;    mov DWORD [rax + 0x04], -1  ; indices->presentFamily  = -1
+;    
+;    ; save old registers and allocate shadow space
+;    push rdi
+;    push rsi
+;    sub rsp, 0x20
+;
+;    mov esi, 0
+;    mov rdi, [rbp - 0x10]
+;
+;.L_family_loop:
+;    cmp esi, [rbp - 0x04]
+;    jge .L_family_loop_end
+;    ; check if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+;    mov rcx, rsi
+;    imul rcx, 0x18
+;    add rcx, rdi
+;
+;    ;lea rcx, [rdi + rsi * 0x18]
+;    mov edx, [rcx + 0x0] ; edx contains .queueFlags
+;    and edx, 0x1         ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
+;    test edx, edx
+;    jz .L_check_present_family
+;    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
+;    mov DWORD [rax + 0x00], esi  ; indices->graphicsFamily = i
+;.L_check_present_family:
+;    mov rcx, [rbp + 0x18] ; a1 = device
+;    mov edx, esi          ; a2 = i
+;    mov rax, [rbp + 0x10] ; Environment
+;    mov r8,  [rax + 0x08] ; a3 = Environment->surface
+;    lea r9,  [rbp - 0x08]
+;    call vkGetPhysicalDeviceSurfaceSupportKHR
+;    mov eax, [rbp - 0x08]
+;    test eax, eax
+;    jz .L_family_loop_check
+;    mov rax, [rbp + 0x20] ; QueueFamilyIndices*
+;    mov DWORD [rax + 0x04], esi  ; indices->presentFamily = i
+;
+;.L_family_loop_check:
+;    ; check here if both families have valid (!= -1) indices, if yes, break
+;    mov rax, [rbp + 0x18] ; QueueFamilyIndices*
+;    mov ecx, [rax + 0x00] ; indices->graphicsFamily
+;    mov edx, [rax + 0x04] ; indices->presentFamily
+;    or ecx, edx           ; is either -1?
+;    cmp ecx, -1
+;    je .L_family_loop_inc
+;    jmp .L_family_loop_end
+;
+;.L_family_loop_inc:
+;    inc rsi
+;    jmp .L_family_loop
+;
+;.L_family_loop_end:
+;    add rsp, 0x20 ; restore nonvolatile registers
+;    pop rsi
+;    pop rdi
+;    
+;    ;sucess:
+;    mov rcx, [rbp - 0x10] ; malloc'd memory
+;    call free
+;    mov rax, 1
+;    jmp .L_find_queue_families_end
+;
+;.L_find_queue_families_fail:
+;    call free
+;.L_find_queue_families_malloc_fail:
+;    mov rax, 0
+;
+;.L_find_queue_families_end:
+;    add rsp, 0x10 + SHADOW_SPACE
+;    pop rbp
+;    ret
 
 check_device_extension_support:
     push rbp
@@ -967,6 +1060,7 @@ section '.data' data readable writeable
     log_ptr          db "0x%llX", 0
     log_ext_name     db "Device Extension: %s", 0
     log_debug        db "Here", 0
+    log_indices      db "graphicsFamily: %d presentFamily: %d", 0
 
     init_sdl_success db "Succesfully initialized SDL", 0
     create_vki_success db "Successfully created vulkan instance", 0
