@@ -504,120 +504,130 @@ select_vk_physical_device:
     ret
 ;=============================== END select_vk_physical_device =================================
 
-; rcx -> Environment*
+;===================== create_vk_device - arg1: Environment* - ret: bool =======================
 create_vk_device:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10 + 0x50 + 0xE0 + 0x50 + SHADOW_SPACE ; QueueFamilyIndices + 2 * VkDeviceQueueCreateInfo + VkPhysicalDeviceFeatures + VkDeviceCreateInfo
+    sub rsp, 0x10 + 0x50 + 0x50 + 0xE0 + SHADOW_SPACE  ; indices + VkDeviceQueueCreateInfo[2] + VkDeviceCreateInfo + VkPhysicalDeviceFeatures
 
-    mov [rbp + 0x10], rcx
+    mov [rbp + 0x10], rcx                ; save env* ptr
 
-    ; create logical device
-    mov rcx, [rbp + 0x10] ; a1 = Environment
-    mov rdx, [rcx + 0x18] ; a2 = Environment->physicalDevice
-    lea r8,  [rbp - 0x10] ; a3 = &indices
+    mov DWORD [rbp - 0x0C], f1_0         ; v1 = 1.0f
+
+    ;rcx already has env*
+    mov rdx, [rcx + ENV_VK_PHDEVICE]
+    lea r8, [rbp - 0x08]                 ; &indices
     call find_queue_families
-
-    mov DWORD [rbp - 0x04], 1   ; assume both indices are equal
-    ; check if the indices are equal
-    mov eax, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
-    cmp eax, [rbp - 0x10 + 0x04] ; indices->presentFamily
-    setne cl                     ; cl = i->gf != i->pf
-    movzx eax, cl                ; extend register
-    add DWORD [rbp - 0x04], eax  ; add 0 or one  to the count
-
-
-
-    ; set up VkDeviceQueueCreateInfo 
-    mov DWORD [rbp - 0x60 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov QWORD [rbp - 0x60 + 0x08], 0    ; .pNext = NULL
-    mov DWORD [rbp - 0x60 + 0x10], 0    ; .flags = 0
-
-    mov eax,  [rbp - 0x10 + 0x00]       ; indices->graphicsFamily
-    mov DWORD [rbp - 0x60 + 0x14], eax  ; .queueFamilyIndex = indices->graphicsFamily
-
-    mov DWORD [rbp - 0x60 + 0x18], 1    ; .queueCount = 1
-    
-    mov DWORD [rbp - 0x08], f1_0        ; move float 1.0 to a free stack space
-    lea rax,  [rbp - 0x08]              ; rax = &f1_0
-    mov QWORD [rbp - 0x60 + 0x20], rax  ; .pQueuePriorities = rax
-
-    mov eax, [rbp - 0x04]
-    cmp eax, 1
-    je .L_create_vk_device_after_queue_create_info
-    ; set up the second structure if the indices are not the same
-    mov DWORD [rbp - 0x38 + 0x00], 0x02 ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov QWORD [rbp - 0x38 + 0x08], 0    ; .pNext = NULL
-    mov DWORD [rbp - 0x38 + 0x10], 0    ; .flags = 0
-
-    mov eax,  [rbp - 0x10 + 0x04]       ; indices->presentFamily
-    mov DWORD [rbp - 0x38 + 0x14], eax  ; .queueFamilyIndex = indices->presentFamily
-
-    mov DWORD [rbp - 0x38 + 0x18], 1    ; .queueCount = 1
-    
-    lea rax,  [rbp - 0x08]              ; rax = &f1_0
-    mov QWORD [rbp - 0x38 + 0x20], rax  ; .pQueuePriorities = rax
-
-.L_create_vk_device_after_queue_create_info:
-    ; set up VkPhysicalDeviceFeatures
-    lea rcx, [rbp - 0x140] ; &deviceFeatures
-    mov edx, 0             ; value
-    mov r8, 0xDC           ; sizeof(VkPhysicalDeviceFeatures)
-    call memset
-
-    ; set up VkDeviceCreateInfo
-    mov DWORD [rbp - 0x190 + 0x00], 0x3 ; .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
-    mov QWORD [rbp - 0x190 + 0x08], 0   ; .pNext = NULL
-    mov DWORD [rbp - 0x190 + 0x10], 0   ; .flags = 0
-    mov eax,  [rbp - 0x004 + 0x00]      ;  count
-    mov DWORD [rbp - 0x190 + 0x14], eax ; .queueCreateInfoCount = count
-    lea rax,  [rbp - 0x060 + 0x00]      ;  &queueCreateInfos
-    mov       [rbp - 0x190 + 0x18], rax ; .pQueueCreateInfos = &queueCreateInfos
-    mov DWORD [rbp - 0x190 + 0x20], 0   ; .enabledLayerCount = 0
-    mov QWORD [rbp - 0x190 + 0x28], 0   ; .ppEnabledLayerNames = NULL
-    mov DWORD [rbp - 0x190 + 0x30], 0   ; .enabledExtensionCount = 0
-    mov QWORD [rbp - 0x190 + 0x38], 0   ; .ppEnabledExtensionNames = NULL
-    lea rax,  [rbp - 0x140 + 0x00]      ;  &deviceFeatures
-    mov QWORD [rbp - 0x190 + 0x40], rax ; .pEnabledFeatures = &deviceFeatures
-
-    ; call vkCreateDevice
-    mov rax, [rbp + 0x010]
-    mov rcx, [rax + 0x018] ; a1 = Environment->physicalDevice
-    lea rdx, [rbp - 0x190] ; a2 = &createInfo
-    mov r8,  0             ; a3 = NULL
-    lea r9,  [rax + 0x020] ; a4 = &device
-    call vkCreateDevice
-    call check_vulkan_error
-    test eax, eax
+    test rax, rax
     jz .L_create_vk_device_fail
 
-    ; get the graphicsQueue
-    mov rax, [rbp + 0x10]
-    mov rcx, [rax + 0x20]        ; a1 = Environment->device
-    mov edx, [rbp - 0x10 + 0x00] ; a2 = indices->graphicsFamily
-    mov r8, 0                    ; a3 = 0
-    lea r9, [rax + 0x28]         ; a4 = &graphicsQueue
+    ; check if either index is unassigned (-1)
+    mov eax, [rbp - 0x08 + 0x00]          ; indices->graphicsFamily
+    mov ecx, [rbp - 0x08 + 0x04]          ; indices->presentFamily
+    test eax, ecx                         
+    js .L_create_vk_device_fail           ; js -> jump if sign bit is set (indicates -1)
+    xor eax, ecx                          ; sets ZF (zeroflag) if both indices are equal
+    setz al        
+    movzx eax, al
+    mov DWORD [rbp - 0x10], eax           ; sets [rbp - 0x10] to 1 if both indices are equal
+
+    ; memset the first struct to 0
+    lea rcx, [rbp - 0x60]                 ; &VkDeviceQueueCreateInfo[0]
+    mov rdx, 0                            ; 0
+    mov r8,  0x28                         ; sizeof(VkDeviceQueueCreateInfo)
+    call memset
+
+    ; fill the struct (graphicsFamily)
+    mov DWORD [rbp - 0x60 + 0x00], 0x2    ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    mov eax,  [rbp - 0x08 + 0x00]         ; indices->graphicsFamily
+    mov DWORD [rbp - 0x60 + 0x14], eax    ; .queueFamilyIndex = indices->graphicsFamily
+    mov DWORD [rbp - 0x60 + 0x18], 1      ; .queueCount = 1
+    lea rax,  [rbp - 0x0C]                ; &v1 (1.0f)
+    mov QWORD [rbp - 0x60 + 0x20], rax    ; .pQueuePriorities = &v1
+
+    ; check if we need to create another struct (only if the indices differ)
+    mov eax, [rbp - 0x10]
+    test eax, eax
+    jnz .L_create_vk_device_after_queue_create_info
+
+    ; memset the second struct to 0
+    lea rcx, [rbp - 0x60]                 ; &VkDeviceQueueCreateInfo[0]
+    mov rdx, 0                            ; 0
+    mov r8,  0x28                         ; sizeof(VkDeviceQueueCreateInfo)
+    call memset
+
+    ; fill the struct (presentFamily)
+    mov DWORD [rbp - 0x38 + 0x00], 0x2    ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+    mov eax,  [rbp - 0x08 + 0x04]         ; indices->presentFamily
+    mov DWORD [rbp - 0x38 + 0x14], eax    ; .queueFamilyIndex = indices->presentFamily
+    mov DWORD [rbp - 0x38 + 0x18], 1      ; .queueCount = 1
+    lea rax,  [rbp - 0x0C]                ; &v1 (1.0f)
+    mov QWORD [rbp - 0x38 + 0x20], rax    ; .pQueuePriorities = &v1
+
+    .L_create_vk_device_after_queue_create_info:
+
+    ; zero out deviceFeatures
+    lea rcx, [rbp - 0x190]; &deviceFeatures
+    mov rdx, 0            ; 0
+    mov r8,  0xE0         ; sizeof(VkDeviceFeatures)
+    call memset
+
+    ; zero out deviceCreateInfo
+    lea rcx, [rbp - 0xB0] ; &deviceCreateInfo
+    mov rdx, 0            ; 0
+    mov r8,  0x50         ; sizeof(VkDeviceCreateInfo)
+    call memset
+
+    ; fill deviceCreateInfo struct
+    mov DWORD [rbp - 0xB0 + 0x00], 0x3    ; .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+    mov eax,  0x1                          
+    add eax,  [rbp - 0x10]                ; count = 1 + indices_equal
+    mov DWORD [rbp - 0xB0 + 0x14], eax    ; .queueCreateInfoCount = count
+    lea rax,  [rbp - 0x60]                ; &queueCreateInfos
+    mov QWORD [rbp - 0xB0 + 0x18], rax    ; .pQueueCreateInfos = &queueCreateInfos
+    ; mov DWORD [rbp - 0xB0 + 0x30], 0    ; .enabledExtensionCount = 0
+    ; mov QWORD [rbp - 0xB0 + 0x38], 0    ; .ppEnabledExtensionNames = NULL <- TODO: set these later when we get extensions
+    lea rax,  [rbp - 0x190]               ; &deviceFeatures
+    mov QWORD [rbp - 0xB0 + 0x40], rax    ; .pEnabledFeatures = &deviceFeatures
+
+    ; call vkCreateDevice
+    mov rax, [rbp + 0x10]                 ; load env ptr
+    mov rcx, [rax + ENV_VK_PHDEVICE]      ; arg1: VkPhysicalDevice
+    lea rdx, [rbp - 0xB0]                 ; arg2: &deviceCreateInfo
+    mov r8,  0                            ; arg3: NULL
+    lea r9,  [rax + ENV_VK_DEVICE]        ; arg4: &device
+    call vkCreateDevice
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_vk_device_fail
+
+    ; get graphicsQueue
+    mov rax, [rbp + 0x10]                 ; load env ptr
+    mov rcx, [rax + ENV_VK_DEVICE]        ; arg1: env->device
+    mov edx, [rbp - 0x08 + 0x00]          ; arg2: indices->graphicsFamily
+    mov r8d, 0                            ; arg3: 0
+    lea r9,  [rax + ENV_VK_GRAPHICSQUEUE] ; arg4: &env->graphicsQueue
     call vkGetDeviceQueue
-    
-    ; get the presentQueue
-    mov rax, [rbp + 0x10]
-    mov rcx, [rax + 0x20]        ; a1 = Environment->device
-    mov edx, [rbp - 0x10 + 0x04] ; a2 = indices->presentFamily
-    mov r8, 0                    ; a3 = 0
-    lea r9, [rax + 0x30]         ; a4 = &presentQueue
+
+    ; get presentQueue
+    mov rax, [rbp + 0x10]                 ; load env ptr
+    mov rcx, [rax + ENV_VK_DEVICE]        ; arg1: env->device
+    mov edx, [rbp - 0x08 + 0x04]          ; arg2: indices->presentFamily
+    mov r8d, 0                            ; arg3: 0
+    lea r9,  [rax + ENV_VK_PRESENTQUEUE]  ; arg4: &env->presentQueue
     call vkGetDeviceQueue
 
     ; success:
-    mov rax, 1
+    mov rax, TRUE
     jmp .L_create_vk_device_end
 
-.L_create_vk_device_fail:
-    mov rax, 0
-
-.L_create_vk_device_end:
-    add rsp, 0x10 + 0x50 + 0xE0 + 0x50 + SHADOW_SPACE
+    .L_create_vk_device_fail:
+    mov rax, FALSE
+    .L_create_vk_device_end:
+    add rsp, 0x10 + 0x50 + 0x50 + 0xE0 + SHADOW_SPACE
     pop rbp
     ret
+;=================================== END create_vk_device ======================================
 
 ;============ is_device_suitable - arg1: Environment* - arg2: VkDevice - ret: bool =============
 is_device_suitable:
@@ -662,50 +672,6 @@ is_device_suitable:
 
 
 
-
-
-
-
-
-
-
-;; rcx -> Environment ; rdx -> VkPhysicalDevice
-;is_device_suitable:
-;    push rbp
-;    mov rbp, rsp
-;    sub rsp, 0x10 + SHADOW_SPACE ; QueueFamilyIndices
-;    
-;    mov [rbp + 0x10], rcx ; Environment*
-;    mov [rbp + 0x18], rdx ; VkPhsyicalDevice*
-;
-;    ;rcx has Environment
-;    ;rdx has VkPhysicalDevice
-;    lea r8, [rbp - 0x10] ; &indices
-;    call find_queue_families
-;    test rax, rax
-;    jz .L_device_suitable_false
-;    ; check here if both families have valid (!= -1) indices, if yes, return true
-;    mov ecx, [rbp - 0x10 + 0x00] ; indices->graphicsFamily
-;    mov edx, [rbp - 0x10 + 0x04] ; indices->presentFamily
-;    or ecx, edx           ; is either -1?
-;    cmp ecx, -1
-;    je .L_device_suitable_false
-;
-;    mov rcx, [rbp + 0x18] ; VkPhsyicalDevice*
-;    call check_device_extension_support
-;    test rax, rax
-;    jz .L_device_suitable_false
-;.L_device_suitable_true:
-;    mov rax, 1
-;    jmp .L_device_suitable_end
-;
-;.L_device_suitable_false:
-;    mov rax, 0
-;
-;.L_device_suitable_end:
-;    add rsp, 0x10 + SHADOW_SPACE
-;    pop rbp
-;    ret
 
 print_device_info:
     push rbp
