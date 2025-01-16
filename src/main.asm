@@ -531,10 +531,10 @@ create_vk_device:
     movzx eax, al
     mov DWORD [rbp - 0x10], eax           ; sets [rbp - 0x10] to 1 if both indices are equal
 
-    ; memset the first struct to 0
+    ; memset both VkDeviceQueueCreateInfo structs to 0
     lea rcx, [rbp - 0x60]                 ; &VkDeviceQueueCreateInfo[0]
     mov rdx, 0                            ; 0
-    mov r8,  0x28                         ; sizeof(VkDeviceQueueCreateInfo)
+    mov r8,  0x50                         ; sizeof(VkDeviceQueueCreateInfo) * 2
     call memset
 
     ; fill the struct (graphicsFamily)
@@ -549,12 +549,6 @@ create_vk_device:
     mov eax, [rbp - 0x10]
     test eax, eax
     jnz .L_create_vk_device_after_queue_create_info
-
-    ; memset the second struct to 0
-    lea rcx, [rbp - 0x60]                 ; &VkDeviceQueueCreateInfo[0]
-    mov rdx, 0                            ; 0
-    mov r8,  0x28                         ; sizeof(VkDeviceQueueCreateInfo)
-    call memset
 
     ; fill the struct (presentFamily)
     mov DWORD [rbp - 0x38 + 0x00], 0x2    ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
