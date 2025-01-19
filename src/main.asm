@@ -19,14 +19,18 @@ extrn vkDestroyInstance
 extrn vkCreateDevice
 extrn vkDestroyDevice
 extrn vkGetDeviceQueue
+extrn vkEnumerateDeviceExtensionProperties
 extrn vkEnumeratePhysicalDevices
 extrn vkGetPhysicalDeviceProperties
 extrn vkGetPhysicalDeviceQueueFamilyProperties
 extrn vkGetPhysicalDeviceSurfaceSupportKHR
-extrn vkEnumerateDeviceExtensionProperties
+extrn vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+extrn vkGetPhysicalDeviceSurfaceFormatsKHR
+extrn vkGetPhysicalDeviceSurfacePresentModesKHR
 extrn malloc
 extrn free
 extrn memset
+extrn strcmp
 
 width = 1280
 height = 720
@@ -71,6 +75,23 @@ EVENT_TYPE = 0x0
 ; event types
 SDL_EVENT_QUIT = 0x100
 ;event types end
+
+
+;struc SwapChainSupportDetails {
+;    .capabilities     rb 0x38
+;    .formats          dq 0
+;    .formatsSize      dq 0
+;    .presentModes     dq 0
+;    .presentModesSize dq 0
+;}
+SCSD_SZ = 0x60
+;members
+SCSD_CAPABILITIES       = 0x00
+SCSD_FORMATS            = 0x38
+SCSD_FORMATS_SIZE       = 0x40
+SCSD_PRESENT_MODES      = 0x48
+SCSD_PRESENT_MODES_SIZE = 0x50
+;members end
 
 section '.text' code readable executable
 
@@ -579,8 +600,9 @@ create_vk_device:
     mov           DWORD [rbp - 0xB0 + 0x14], eax    ; .queueCreateInfoCount = count
     lea           rax,  [rbp - 0x60]                ; &queueCreateInfos
     mov           QWORD [rbp - 0xB0 + 0x18], rax    ; .pQueueCreateInfos = &queueCreateInfos
-    ; mov DWORD [rbp - 0xB0 + 0x30], 0    ; .enabledExtensionCount = 0
-    ; mov QWORD [rbp - 0xB0 + 0x38], 0    ; .ppEnabledExtensionNames = NULL <- TODO: set these later when we get extensions
+    mov           DWORD [rbp - 0xB0 + 0x30], required_extensions_size    ; .enabledExtensionCount = required_extensions_size
+    lea           rax,  [required_extensions]       ; required_extensions
+    mov           QWORD [rbp - 0xB0 + 0x38], rax    ; .ppEnabledExtensionNames = required_extensions
     lea           rax,  [rbp - 0x190]               ; &deviceFeatures
     mov           QWORD [rbp - 0xB0 + 0x40], rax    ; .pEnabledFeatures = &deviceFeatures
 
@@ -627,7 +649,7 @@ create_vk_device:
 is_device_suitable:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, 0x10 + SHADOW_SPACE ; indices
+    sub           rsp, 0x10 + SCSD_SZ + SHADOW_SPACE ; indices, SwapChainSupportDetails
 
     mov           [rbp + 0x10], rcx                 ; save arg1
     mov           [rbp + 0x18], rdx                 ; save arg2
@@ -649,14 +671,36 @@ is_device_suitable:
     test          rax, rax
     jz            .L_is_device_suitable_false
 
+    mov rcx, [rbp + 0x10]
+    mov rdx, [rbp + 0x18]
+    lea r8, [rbp - 0x10 - SCSD_SZ]
+    call query_swap_chain_support
+
+    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_FORMATS]
+    test rcx, rcx
+    jz .L_is_device_suitable_false_skip_format_free
+    call free ; free malloc'd ptr
+
+    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_PRESENT_MODES]
+    test rcx, rcx
+    jz .L_is_device_suitable_false
+    call free ; free malloc'd ptr
+
     ; true:
     mov           rax, TRUE
     jmp           .L_is_device_suitable_end
 
+
+    .L_is_device_suitable_false_skip_format_free:
+    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_PRESENT_MODES]
+    test rcx, rcx
+    jz .L_is_device_suitable_false
+    call free
     .L_is_device_suitable_false:
     mov           rax, FALSE
+    
     .L_is_device_suitable_end:
-    add           rsp, 0x10 + SHADOW_SPACE
+    add           rsp, 0x10 + SCSD_SZ + SHADOW_SPACE
     pop           rbp
     ret
 ;================================== END is_device_suitable =====================================
@@ -756,49 +800,186 @@ find_queue_families:
     ret
 ;================================================ END find_queue_families ==================================================
 
+;======== query_swap_chain_support - arg1: Environment* - arg2: VkPhysicalDevice - arg3: SwapChainSupportDetails* - ret: bool ========
+query_swap_chain_support:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx
+    mov [rbp + 0x18], rdx
+    mov [rbp + 0x20], r8 
+
+    mov rcx, rdx          ; VkPhysicalDevice
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_SURFACE] ; surface
+    ; r8 already contains pointer to details->capabilities
+    call vkGetPhysicalDeviceSurfaceCapabilitiesKHR
+    call check_vulkan_error
+    test rax, rax
+    jz .L_query_swap_chain_support_fail_no_free_formats
+
+    mov rcx, [rbp + 0x18] ; VkPhysicalDevice
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_SURFACE] ; surface
+    lea r8,  [rbp - 0x04] ; &formatCount
+    mov r9,  0            ; NULL
+    call vkGetPhysicalDeviceSurfaceFormatsKHR
+    call check_vulkan_error
+    test rax, rax
+    jz .L_query_swap_chain_support_fail_no_free_formats
+    cmp DWORD [rbp - 0x04], 0 ; if (formatCount == 0)
+    je .L_query_swap_chain_support_skip_formats
+
+    mov ecx, [rbp - 0x04] ; formatCount
+    shl rcx, 3                  ; formatCount << 3 (*8 which is sizeof(VkSurfaceFormatKHR))
+    call malloc
+    mov rcx, [rbp + 0x20]       ; SwapChainSupportDetails*
+    mov [rcx + SCSD_FORMATS], rax       ; SwapChainSupportDetails->formats = malloc(...)
+    mov edx, [rbp - 0x04]       ; formatCount
+    mov [rcx + SCSD_FORMATS_SIZE], edx       ; SwapChainSupportDetails->formatCount = formatCount
+    test rax, rax
+    jz .L_query_swap_chain_support_fail_no_free_formats
+    
+    mov rcx, [rbp + 0x18]       ; arg1: VkPhysicalDevice
+    mov r8,  [rbp + 0x10]
+    mov rdx, [r8 + ENV_SURFACE] ; surface
+    lea r8,  [rbp - 0x04]       ; &formatCount
+    mov r9, rax                 ; arg4: mallocd' ptr
+    call vkGetPhysicalDeviceSurfaceFormatsKHR
+
+    .L_query_swap_chain_support_skip_formats:
+    mov rcx, [rbp + 0x18] ; VkPhysicalDevice
+    mov rax, [rbp + 0x10] ; Env*
+    mov rdx, [rax + ENV_SURFACE] ; Env->surface
+    lea r8,  [rbp - 0x08] ; &presentModeCount
+    mov r9,  0            ; NULL
+    call vkGetPhysicalDeviceSurfacePresentModesKHR
+    call check_vulkan_error
+    test rax, rax
+    jz .L_query_swap_chain_support_fail
+    cmp DWORD [rbp - 0x08], 0 ; if (presentModeCount == 0)
+    je .L_query_swap_chain_support_success
+
+    mov ecx, [rbp - 0x08] ; presentModeCount
+    shl rcx, 2            ; formatCount << 2 (*4 which is sizeof(VkPresentModeKHR))
+    call malloc
+    mov rcx, [rbp + 0x20]       ; SwapChainSupportDetails*
+    mov [rcx + SCSD_PRESENT_MODES], rax       ; SwapChainSupportDetails->presentModes = malloc(...)
+    mov edx, [rbp - 0x08]       ; presentModeCount
+    mov [rcx + SCSD_PRESENT_MODES_SIZE], edx       ; SwapChainSupportDetails->presentModeCount = presentModeCount
+    test rax, rax               ; malloc returned nullptr
+    jz .L_query_swap_chain_support_fail
+
+    mov rcx, [rbp + 0x18]       ; arg1: VkPhysicalDevice
+    mov r8,  [rbp + 0x10]
+    mov rdx, [r8 + ENV_SURFACE] ; surface
+    lea r8,  [rbp - 0x08]       ; &presentModeCount
+    mov r9, rax                 ; arg4: mallocd' ptr
+    call vkGetPhysicalDeviceSurfacePresentModesKHR
+
+    .L_query_swap_chain_support_success:
+    mov rax, TRUE
+    jmp .L_query_swap_chain_support_end
+
+    .L_query_swap_chain_support_fail:
+    mov rdx, [rbp + 0x20]
+    mov rcx, [rdx + 0x38]       ; mallocd formats ptr
+    call free
+    .L_query_swap_chain_support_fail_no_free_formats:
+    mov rax, FALSE
+    .L_query_swap_chain_support_end:
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;================================================== END query_swap_chain_support =====================================================
+
 ;============= check_device_extension_support - arg1: VkPhysicalDevice - ret: bool =============
 check_device_extension_support:
     push          rbp
     mov           rbp, rsp
+    push rdi
+    push rsi
+    push r12
+    push r13
     sub rsp, 0x10 + required_extensions_size_aligned + SHADOW_SPACE ; uint64 + uint32
-
-    ; [rbp - 0x04] -> uint32 extensionCount
-    ; [rbp - 0x08] -> uint32 checkCount
-    ; [rbp - 0x10] -> malloc'd ptr
-    ; [rbp - 0x10 - required_extensions_size_aligned] -> checkedArray
+    ; - 0x20 is for all the pushed registers
+    ; [rbp - 0x20 - 0x04] -> uint32 extensionCount
+    ; [rbp - 0x20 - 0x08] -> uint32 checkCount
+    ; [rbp - 0x20 - 0x10] -> malloc'd ptr
+    ; [rbp - 0x20 - 0x10 - required_extensions_size_aligned] -> checkedArray
 
     mov [rbp + 0x10], rcx ; save VkPhysicalDevice
     
-    mov DWORD [rbp - 0x08], required_extensions_size ; keep track of how many we still need to check
-
+    mov DWORD [rbp - 0x20 - 0x08], required_extensions_size ; keep track of how many we still need to check
+    cmp DWORD [rbp - 0x20 - 0x08], 0
+    je .L_check_device_extension_support_true               ; if 0 extensions required, its true
 
     ; rcx already contains VkPhysicalDevice
     mov rdx, 0                   ; NULL
-    lea r8, [rbp - 0x04]         ; &extensionCount
+    lea r8, [rbp - 0x20 - 0x04]  ; &extensionCount
     mov r9, 0                    ; NULL
     call vkEnumerateDeviceExtensionProperties
+    
+    lea rcx, [rbp - 0x20 - 0x10 - required_extensions_size_aligned]
+    mov rdx, 0
+    mov r8, required_extensions_size_aligned
+    call memset                 ; set checked array to 0
 
     mov ecx, 0x104
-    imul ecx, [rbp - 0x04]
+    imul ecx, [rbp - 0x20 - 0x04]
     call malloc
     test rax, rax
     jz .L_check_device_extension_support_false_no_free
-    mov [rbp - 0x10], rax
+    mov rdi, rax
 
     mov rcx, [rbp + 0x10]
     mov rdx, 0
-    lea r8, [rbp - 0x04]
+    lea r8, [rbp - 0x20 - 0x04]
     mov r9, rax                 ; malloc'd ptr
     call vkEnumerateDeviceExtensionProperties
+    
+    mov r12, required_extensions ; base of inner loop
+    mov rsi, 0 ; i = 0
+
+    .L_check_device_extension_support_outer_loop_begin:
+    cmp esi, [rbp - 0x20 - 0x04]               ; if the outer loop ends, return false, not all found
+    jge .L_check_device_extension_support_false
+    mov r13, 0 ; j = 0
+    
+    .L_check_device_extension_support_inner_loop_begin:
+    cmp r13, required_extensions_size
+    jge .L_check_device_extension_support_inner_loop_end
+    cmp BYTE [rbp - 0x20 - 0x10 - required_extensions_size_aligned + r13], 1
+    je .L_check_device_extension_support_inner_loop_skip
+    mov rcx, rsi
+    imul rcx, 0x104
+    add rcx, rdi ; rcx now contains a char* to the extension name (available_extensions[i])
+ 
+    mov rdx, [r12 + r13 * 0x08] ; rdx is not the jth required string (required_extensions[j])
+
+    call strcmp
+    test rax, rax
+    jnz .L_check_device_extension_support_inner_loop_skip
+    dec DWORD [rbp - 0x20 - 0x08]
+    jz .L_check_device_extension_support_true
+
+    .L_check_device_extension_support_inner_loop_skip:
+    inc r13
+    jmp .L_check_device_extension_support_inner_loop_begin
+
+    .L_check_device_extension_support_inner_loop_end:
+    inc rsi
+    jmp .L_check_device_extension_support_outer_loop_begin
 
     .L_check_device_extension_support_true:
-    mov rcx, [rbp - 0x10]
+    mov rcx, rdi
     call free
     mov rax, TRUE
     jmp .L_check_device_extension_support_end
 
     .L_check_device_extension_support_false:
-    mov rcx, [rbp - 0x10]
+    mov rcx, rdi
     call free
 
     .L_check_device_extension_support_false_no_free:
@@ -806,122 +987,13 @@ check_device_extension_support:
 
     .L_check_device_extension_support_end:
     add rsp, 0x10 + required_extensions_size_aligned + SHADOW_SPACE
+    pop r13
+    pop r12
+    pop rsi
+    pop rdi
     pop rbp
     ret
 ;============================ END check_device_extension_support ===============================
-
-print_device_info:
-    push          rbp
-    mov           rbp, rsp
-    sub           rsp, 0x340 + SHADOW_SPACE ; VkPhysicalDeviceProperties + 8 + SHADOW_SPACE
-
-    lea           rdx, [rbp - 0x338]
-    call          vkGetPhysicalDeviceProperties
-
-    lea           rcx, [devprops_api]
-    mov           rdx, [rbp - 0x338 + 0x00]
-    call          SDL_Log
-
-    lea           rcx, [devprops_driver]
-    mov           rdx, [rbp - 0x338 + 0x04]
-    call          SDL_Log
-
-    lea           rcx, [devprops_vendor]
-    mov           rdx, [rbp - 0x338 + 0x08]
-    call          SDL_Log
-
-    lea           rcx, [devprops_deviceI]
-    mov           rdx, [rbp - 0x338 + 0x0C]
-    call          SDL_Log
-
-    lea           rcx, [devprops_deviceT]
-    mov           rdx, [rbp - 0x338 + 0x10]
-    call          SDL_Log
-
-    lea           rcx, [devprops_deviceN]
-    lea           rdx, [rbp - 0x338 + 0x14]
-    call          SDL_Log
-
-    add           rsp, 0x340 + SHADOW_SPACE
-    pop           rbp
-    ret
-
-; check_device_extension_support:
-;     push          rbp
-;     mov           rbp, rsp
-;     sub           rsp, 0x10 + SHADOW_SPACE ; uint32, uint64
-
-;     mov           [rbp + 0x10], rcx
-
-;     ; call vkEnumerateDeviceExtensionProperties
-;     ; rcx has the device ; a1 = device
-;     mov           rdx, 0           ; a2 = NULL
-;     lea           r8,  [rbp - 0x04]; a3 = &extensionCount
-;     mov           r9,  0           ; a4 = NULL
-;     call          vkEnumerateDeviceExtensionProperties
-;     call          check_vulkan_error
-;     test          rax, rax
-;     jz            .L_check_device_extension_support_false
-
-;     mov           ecx, [rbp - 0x04] ; extensionCount
-;     imul          ecx, 0x104       ; sizeof(VkExtensionProperties)
-;     call          malloc
-;     test          rax, rax
-;     jz            .L_check_device_extension_support_false
-;     mov           [rbp - 0x10], rax
-
-;     mov           rcx, [rbp + 0x10] ; a1 = device
-;     mov           rdx, 0            ; a2 = NULL
-;     lea           r8,  [rbp - 0x04] ; a3 = &extensionCount
-;     mov           r9,  [rbp - 0x10] ; a4 = malloc'd ptr
-;     call          vkEnumerateDeviceExtensionProperties
-;     call          check_vulkan_error
-;     test          rax, rax
-;     jz            .L_check_device_extension_support_error
-
-;     push          rsi
-;     push          rdi
-;     sub           rsp, SHADOW_SPACE
-
-;     mov           rsi, 0              ; i = 0
-;     mov           rdi, [rbp - 0x10]   ; baseptr
-;     mov           DWORD [rbp - 0x08], device_extensions_size ; required_extensions_size
-;     .L_extension_loop:
-;     cmp           esi, [rbp - 0x04] ; count
-;     jge           .L_extension_loop_end
-
-;     mov           rdx, rsi
-;     imul          rdx, 0x104
-;     add           rdx, rdi ; rdx now contains a char* to the extension name
-
-
-
-;     inc           rsi
-;     jmp           .L_extension_loop
-;     .L_extension_loop_end:
-;     add           rsp, SHADOW_SPACE
-;     pop           rdi
-;     pop           rsi
-
-
-;     mov           rcx, [rbp - 0x10]
-;     call          free
-
-
-;     .L_check_device_extension_support_true:
-;     mov           rax, 1
-;     jmp           .L_check_device_extension_support_end
-
-;     .L_check_device_extension_support_error:
-;     mov           rcx, [rbp - 0x10]
-;     call          free
-;     .L_check_device_extension_support_false:
-;     mov           rax, 0
-
-;     .L_check_device_extension_support_end:
-;     add           rsp, 0x10 + SHADOW_SPACE
-;     pop           rbp
-;     ret
 
 ;================ check_sdl_error - takes result from last SDL call - ret: bool ================
 check_sdl_error:
@@ -962,6 +1034,41 @@ check_vulkan_error:
     ret
 ;================================= END check_vulkan_error ======================================
 
+; print_device_info:
+;     push          rbp
+;     mov           rbp, rsp
+;     sub           rsp, 0x340 + SHADOW_SPACE ; VkPhysicalDeviceProperties + 8 + SHADOW_SPACE
+
+;     lea           rdx, [rbp - 0x338]
+;     call          vkGetPhysicalDeviceProperties
+
+;     lea           rcx, [devprops_api]
+;     mov           rdx, [rbp - 0x338 + 0x00]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_driver]
+;     mov           rdx, [rbp - 0x338 + 0x04]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_vendor]
+;     mov           rdx, [rbp - 0x338 + 0x08]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceI]
+;     mov           rdx, [rbp - 0x338 + 0x0C]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceT]
+;     mov           rdx, [rbp - 0x338 + 0x10]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceN]
+;     lea           rdx, [rbp - 0x338 + 0x14]
+;     call          SDL_Log
+
+;     add           rsp, 0x340 + SHADOW_SPACE
+;     pop           rbp
+;     ret
 
 section '.data' data readable writeable
     window_title         db "ASM SDL Window!", 0
@@ -976,6 +1083,8 @@ section '.data' data readable writeable
     log_ext_name         db "Device Extension: %s", 0
     log_debug            db "Here", 0
     log_indices          db "graphicsFamily: %d presentFamily: %d", 0
+    log_str              db "string: %s", 0
+    log_2str             db "str1: [%s] str2: [%s]", 0
 
     init_sdl_success     db "Succesfully initialized SDL", 0
     create_vki_success   db "Successfully created vulkan instance", 0
