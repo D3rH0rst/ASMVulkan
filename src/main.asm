@@ -28,6 +28,8 @@ extrn vkGetPhysicalDeviceSurfaceSupportKHR
 extrn vkGetPhysicalDeviceSurfaceCapabilitiesKHR
 extrn vkGetPhysicalDeviceSurfaceFormatsKHR
 extrn vkGetPhysicalDeviceSurfacePresentModesKHR
+extrn vkCreateSwapchainKHR
+extrn vkDestroySwapchainKHR
 extrn malloc
 extrn free
 extrn memset
@@ -43,6 +45,13 @@ VK_COLOR_SPACE_SRGB_NONLINEAR_KHR = 0
 VK_PRESENT_MODE_IMMEDIATE_KHR = 0
 VK_PRESENT_MODE_MAILBOX_KHR = 1
 VK_PRESENT_MODE_FIFO_KHR = 2
+
+VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000
+VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010
+VK_SHARING_MODE_EXCLUSIVE = 0
+VK_SHARING_MODE_CONCURRENT = 1
+VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x00000001
+
 
 TRUE = 1
 FALSE = 0
@@ -213,8 +222,19 @@ cleanup:
     test          rcx, rcx         ; if vk_instance is NULL, skip over vulkan cleanup as the other vulkan resources will be invalid too
     jz            .L_cleanup_window
     test          rdx, rdx         ; if vk_surface is NULL, go to vkDestroyDevice
-    jz            .L_cleanup_device
+    jz            .L_cleanup_swapchain
     call          SDL_Vulkan_DestroySurface
+
+    .L_cleanup_swapchain:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_SWAPCHAIN]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_device
+    call vkDestroySwapchainKHR
 
     .L_cleanup_device:
     mov           rax, [rbp + 0x10] ; load Env* pointer
@@ -668,7 +688,7 @@ create_vk_device:
 create_swap_chain:
     push rbp
     mov rbp, rsp
-    sub rsp, SCSD_SZ + 0x20 + SHADOW_SPACE
+    sub rsp, SCSD_SZ + 0x20 + 0x70 + 0x10 + SHADOW_SPACE
 
     mov [rbp + 0x10], rcx
 
@@ -701,8 +721,74 @@ create_swap_chain:
     mov rcx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES]
     call free
 
+    ; get the imageCount, preferably as minImageCount + 1
+    mov eax, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x00] ; minImageCount
+    inc eax ; + 1
+    mov [rbp - SCSD_SZ - 0x14], eax
+    mov ecx, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x04]
+    test ecx, ecx ; maxImageCount == 0, skip
+    jz .L_create_swap_chain_skip_image_clamp
+    cmp eax, ecx 
+    jle .L_create_swap_chain_skip_image_clamp ; imageCount <= maxImageCount, skip
+    mov [rbp - SCSD_SZ - 0x14], ecx          ; imageCount = maxImageCount
+    
+    .L_create_swap_chain_skip_image_clamp:
+    mov rax, [rbp + 0x10] ; load env ptr
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x00], VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR ; .sType
+    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x08], 0x0 ; .pNext
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x10], 0x0 ; .flags
+    mov rcx,  [rax + ENV_SURFACE]
+    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x18], rcx ; .surface
+    mov ecx,  [rbp - SCSD_SZ - 0x14]             ;  imageCount
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x20], ecx ; .minImageCount
+    mov ecx,  [rbp - SCSD_SZ - 0x20 + 0x00]      ;  surfaceFormat.format
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x24], ecx ; .imageFormat
+    mov ecx,  [rbp - SCSD_SZ - 0x20 + 0x04]      ;  surfaceFormat.colorSpace
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x28], ecx ; .imageColorSpace
+    mov rcx,  [rbp - SCSD_SZ - 0x10]             ;  extent
+    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x2C], rcx ; .imageExtent
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x34], 0x1 ; .imageArrayLayers
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x38], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ; .imageUsage
+
+    mov rcx, rax
+    mov rdx, [rax + ENV_VK_PHDEVICE]
+    lea r8,  [rbp - SCSD_SZ - 0xA0] ; &indices
+    call find_queue_families
+
+    mov ecx, [rbp - SCSD_SZ - 0xA0 + 0x00] ; indices->graphicsFamily
+    cmp ecx, [rbp - SCSD_SZ - 0xA0 + 0x04] ; indices->presentFamily
+    je .L_create_swap_chain_indices_equal  ; if equal, use VK_SHARING_MODE_EXCLUSIVE otherwise VK_SHARING_MODE_CONCURRENT
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x3C], VK_SHARING_MODE_CONCURRENT ; .imageSharingMode
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x40], 0x2 ; .queueFamilyIndexCount
+    lea rcx,  [rbp - SCSD_SZ - 0xA0]             ; &indices
+    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x48], rcx ; .pQueueFamilyIndices
+    jmp .L_create_swap_chain_after_indices
+
+    .L_create_swap_chain_indices_equal:
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x3C], VK_SHARING_MODE_EXCLUSIVE ; .imageSharingMode
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x40], 0x0 ; .queueFamilyIndexCount
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x48], 0x0 ; .pQueueFamilyIndices
+    
+    .L_create_swap_chain_after_indices:
+    mov ecx,  [rbp - SCSD_SZ + 0x00 + 0x28]      ; swapchainSupportDetails.capabilities.currentTransform
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x50], ecx ; .preTransform
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x54], VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ; .compositeAlpha
+    mov ecx,  [rbp - SCSD_SZ - 0x18]             ;  presentMode
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x58], ecx ; .presentMode
+    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x5C], TRUE; .clipped
+    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x60], 0x0 ; .oldSwapchain
+
+
+
     mov rax, [rbp + 0x10]
-    mov QWORD [rax + ENV_VK_SWAPCHAIN], 0 ; NULL for now
+    mov rcx, [rax + ENV_VK_DEVICE]  ; device
+    lea rdx, [rbp - SCSD_SZ - 0x90] ; &createInfo
+    mov r8,  0                      ; NULL
+    lea r9,  [rax + ENV_VK_SWAPCHAIN] ; &swapChain
+    call vkCreateSwapchainKHR
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_swap_chain_fail
 
     ; success:
     mov rax, TRUE
@@ -712,7 +798,7 @@ create_swap_chain:
     mov rax, FALSE
     
     .L_create_swap_chain_end:
-    add rsp, SCSD_SZ + 0x20 + SHADOW_SPACE
+    add rsp, SCSD_SZ + 0x20 + 0x70 + 0x10 + SHADOW_SPACE
     pop rbp
     ret
 ;=================================== END create_swap_chain =====================================
