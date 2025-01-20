@@ -59,6 +59,7 @@ f1_0 = 0x3f800000
 ;    .vk_device        dq 0
 ;    .vk_graphicsQueue dq 0
 ;    .vk_presentQueue  dq 0
+;    .vk_swapChain     dq 0
 ;}
 ENV_SZ               = 0x40
 ; members
@@ -69,6 +70,7 @@ ENV_VK_PHDEVICE      = 0x18
 ENV_VK_DEVICE        = 0x20
 ENV_VK_GRAPHICSQUEUE = 0x28
 ENV_VK_PRESENTQUEUE  = 0x30
+ENV_VK_SWAPCHAIN     = 0x38
 ; members end
 
 ;struc SDL_Event {
@@ -348,6 +350,16 @@ init_vulkan:
     mov           rdx, [rdx + ENV_VK_DEVICE]
     call          SDL_Log
 
+
+    mov rcx, [rbp + 0x10]
+    call create_swap_chain
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov           rcx, is_sc
+    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rdx + ENV_VK_SWAPCHAIN]
+    call          SDL_Log
 
     ; success
     mov           rax, 1
@@ -651,6 +663,59 @@ create_vk_device:
     pop           rbp
     ret
 ;=================================== END create_vk_device ======================================
+
+;===================== create_swap_chain - arg1: Environment* - ret: bool ======================
+create_swap_chain:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SCSD_SZ + 0x20 + SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx
+
+    ; rcx already has Env*
+    mov rdx, [rcx + ENV_VK_PHDEVICE]
+    lea r8, [rbp - SCSD_SZ]
+    call query_swap_chain_support
+
+    ; choose the best SurfaceFormat
+    mov rcx, [rbp - SCSD_SZ + SCSD_FORMATS]
+    mov edx, [rbp - SCSD_SZ + SCSD_FORMATS_SIZE]
+    call choose_swap_chain_format
+    mov [rbp - SCSD_SZ - 0x20], rax ; VkSurfaceFormatKHR
+
+    ; choose the best PresentMode
+    mov rcx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES]
+    mov edx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES_SIZE]
+    call choose_swap_present_mode
+    mov [rbp - SCSD_SZ - 0x18], eax ; VkPresentModeKHR
+
+    ; choose the correct SwapExtent
+    mov rcx, [rbp + 0x10] ; env
+    lea rdx, [rbp - SCSD_SZ + SCSD_CAPABILITIES]
+    call choose_swap_extent
+    mov [rbp - SCSD_SZ - 0x10], rax ; VkExtent2D
+
+    ; free malloc'd ptr in query_swap_chain_support
+    mov rcx, [rbp - SCSD_SZ + SCSD_FORMATS]
+    call free
+    mov rcx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES]
+    call free
+
+    mov rax, [rbp + 0x10]
+    mov QWORD [rax + ENV_VK_SWAPCHAIN], 0 ; NULL for now
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_swap_chain_end
+
+    .L_create_swap_chain_fail:
+    mov rax, FALSE
+    
+    .L_create_swap_chain_end:
+    add rsp, SCSD_SZ + 0x20 + SHADOW_SPACE
+    pop rbp
+    ret
+;=================================== END create_swap_chain =====================================
 
 ;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
@@ -970,6 +1035,7 @@ check_device_extension_support:
     jnz .L_check_device_extension_support_inner_loop_skip
     dec DWORD [rbp - 0x20 - 0x08]
     jz .L_check_device_extension_support_true
+    mov BYTE [rbp - 0x20 - 0x10 - required_extensions_size_aligned + r13], 1
 
     .L_check_device_extension_support_inner_loop_skip:
     inc r13
@@ -1005,55 +1071,48 @@ check_device_extension_support:
 ;============= choose_swap_chain_format - arg1: VkSurfaceFormatKHR* - arg2: count - ret: VkSurfaceFormatKHR (uint64) =============
 choose_swap_chain_format:
     ; no need for new stack frame
-    push rsi
-    push rdi
-    mov rdi, rcx ; base pointer to VkSurfaceFormatKHR*
-    mov rsi, 0
-
+    ; rcx contains base ptr, rdx count, r8 i
+    mov r8, 0
     .L_choose_swap_chain_format_loop_begin:
-    mov rax, [rdi + rsi * 0x08] ; availableFormats[i]
+    lea rax, [rcx + r8 * 0x08] ; availableFormats[i]
     cmp DWORD [rax + 0x00], VK_FORMAT_B8G8R8A8_SRGB           ; .format
     jne .L_choose_swap_chain_format_loop_end
     cmp DWORD [rax + 0x04], VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ; .colorSpace
-    je .L_choose_swap_chain_format_end           ; if both are equal, return the current
+    jne .L_choose_swap_chain_format_loop_end           ; if both are equal, return the current
+    mov rax, [rax] ; deref the pointer
+    jmp .L_choose_swap_chain_format_end
     .L_choose_swap_chain_format_loop_end:
-    inc rsi
-    cmp rsi, rdx
+    inc r8
+    cmp r8, rdx
     jl .L_choose_swap_chain_format_loop_begin
 
     ; default return 
-    mov rax, [rdi + 0x00] ; availableFormats[0]
+    mov rax, [rcx + 0x00] ; availableFormats[0]
 
     .L_choose_swap_chain_format_end:
-    pop rdi
-    pop rsi
     ret
 ;=============================================== END choose_swap_chain_format ====================================================
 
 ;============= choose_swap_present_mode - arg1: VkPresentModeKHR* - arg2: count - ret: VkPresentModeKHR (uint32) =============
 choose_swap_present_mode:
     ; no need for new stack frame
-    push rsi
-    push rdi
-
-    mov rdi, rcx ; base pointer to VkPresentModeKHR*
-    mov rsi, 0
+    ; rcx contains base ptr, rdx count, r8 i
+    mov r8, 0
 
     .L_choose_swap_present_mode_loop_begin:
-    mov rax, [rdi + rsi * 0x04] ; availablePresentModes[i]
+    lea rax, [rcx + r8 * 0x04] ; availablePresentModes[i]
     cmp DWORD [rax + 0x00], VK_PRESENT_MODE_MAILBOX_KHR
     jne .L_choose_swap_present_mode_loop_end
+    mov rax, [rax] ; deref the ptr
     jmp .L_choose_swap_present_mode_end
     .L_choose_swap_present_mode_loop_end:
-    inc rsi
-    cmp rsi, rdx
+    inc r8
+    cmp r8, rdx
     jl .L_choose_swap_present_mode_loop_begin
 
     .L_choose_swap_present_mode_end_default:
-    mov rax, [rdi + 0x00] ; availableFormats[0]
+    mov rax, [rcx + 0x00] ; availableFormats[0]
     .L_choose_swap_present_mode_end:
-    pop rdi
-    pop rsi
     ret
 ;============================================= END choose_swap_present_mode ==================================================
 
@@ -1072,14 +1131,39 @@ choose_swap_extent:
     jmp .L_choose_swap_extent_end
     .L_choose_swap_extent_get_extent:
     mov rcx, [rcx + 0x00] ; window
-    lea rdx, [rbp - 0x04] ; &width
-    lea r8,  [rbp - 0x08] ; &height
+    lea rdx, [rbp - 0x08] ; &width
+    lea r8,  [rbp - 0x04] ; &height
     call SDL_GetWindowSizeInPixels
-    mov eax, [rbp - 0x04] ; width
-    shl rax, 32           ; shift into upper bits
-    mov rcx, [rbp - 0x08] ;
-    or rax, rcx           ; lower bits of rax = width
+    
+    mov rax, [rbp + 0x18] ; get capabilities
+    
+    ; clamp width
+    mov ecx, [rax + 0x10 + 0x00] ; minImageExtent.width
+    cmp [rbp - 0x08], ecx
+    jge .L_choose_swap_extent_clamp_width_max
+    mov [rbp - 0x08], ecx  ; if (width < minImageExtent.width) width = minImageExtent.width
+    
+    .L_choose_swap_extent_clamp_width_max:
+    mov ecx, [rax + 0x18 + 0x00] ; maxImageExtent.width
+    cmp [rbp - 0x08], ecx
+    jle .L_choose_swap_extent_clamp_height_min
+    mov [rbp - 0x08], ecx  ; if (width > maxImageExtent.width) width = maxImageExtent.width
 
+    ; clamp height
+    .L_choose_swap_extent_clamp_height_min:
+    mov ecx, [rax + 0x10 + 0x04] ; minImageExtent.height
+    cmp [rbp - 0x04], ecx
+    jge .L_choose_swap_extent_clamp_height_max
+    mov [rbp - 0x04], ecx  ; if (height < minImageExtent.height) height = minImageExtent.height
+
+    .L_choose_swap_extent_clamp_height_max:
+    mov ecx, [rax + 0x18 + 0x04] ; maxImageExtent.height
+    cmp [rbp - 0x04], ecx
+    jle .L_choose_swap_extent_skip_clamp
+    mov [rbp - 0x04], ecx  ; if (height > maxImageExtent.height) height = maxImageExtent.height
+
+    .L_choose_swap_extent_skip_clamp:
+    mov rax, [rbp - 0x08] ; get qword of width (width + height) into rax
 
     .L_choose_swap_extent_end:
     add rsp, 0x10 + SHADOW_SPACE
@@ -1178,18 +1262,13 @@ section '.data' data readable writeable
     log_str              db "string: %s", 0
     log_2str             db "str1: [%s] str2: [%s]", 0
 
-    init_sdl_success     db "Succesfully initialized SDL", 0
-    create_vki_success   db "Successfully created vulkan instance", 0
-    create_vks_success   db "Successfully created vulkan surface", 0
-    pick_phd_success     db "Successfully picked a physical device", 0
-    create_vkd_success   db "Successfully created vulkan device", 0
-
     is_sdl               db "Initialized SDL...", 0
     is_window            db "Initialized SDL window [0x%llX]...", 0
     is_vki               db "Initialized Vulkan instance [0x%llX]...", 0
     is_vks               db "Initialized Vulkan surface [0x%llX]...", 0
     is_phd               db "Initialized Vulkan physical device [0x%llX]...", 0
     is_vkd               db "Initialized Vulkan device [0x%llX]...", 0
+    is_sc                db "Initialized Vulkan swap chain [0x%llX]", 0
     is_everything        db "Successfully initialized everything", 0
 
     devprops_api         db "devprops apiVersion: 0x%X", 0
