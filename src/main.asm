@@ -30,6 +30,7 @@ extrn vkGetPhysicalDeviceSurfaceFormatsKHR
 extrn vkGetPhysicalDeviceSurfacePresentModesKHR
 extrn vkCreateSwapchainKHR
 extrn vkDestroySwapchainKHR
+extrn vkGetSwapchainImagesKHR
 extrn malloc
 extrn free
 extrn memset
@@ -61,25 +62,33 @@ SHADOW_SPACE = 0x20
 f1_0 = 0x3f800000
 
 ;struc Environment {
-;    .window           dq 0
-;    .surface          dq 0
-;    .vk_instance      dq 0
-;    .vk_pysicaldevice dq 0
-;    .vk_device        dq 0
-;    .vk_graphicsQueue dq 0
-;    .vk_presentQueue  dq 0
-;    .vk_swapChain     dq 0
+;    .window               dq 0
+;    .surface              dq 0
+;    .vk_instance          dq 0
+;    .vk_pysicaldevice     dq 0
+;    .vk_device            dq 0
+;    .vk_graphicsQueue     dq 0
+;    .vk_presentQueue      dq 0
+;    .vk_swapChain         dq 0
+;    .vk_swapChainImages   dq 0
+;    .swapChainImageCount  dq 0
+;    .swapChainImageFormat dq 0
+;    .swapChainExtent      dq 0
 ;}
-ENV_SZ               = 0x40
+ENV_SZ                      = 0x60
 ; members
-ENV_WINDOW           = 0x00
-ENV_SURFACE          = 0x08
-ENV_VK_INSTANCE      = 0x10
-ENV_VK_PHDEVICE      = 0x18
-ENV_VK_DEVICE        = 0x20
-ENV_VK_GRAPHICSQUEUE = 0x28
-ENV_VK_PRESENTQUEUE  = 0x30
-ENV_VK_SWAPCHAIN     = 0x38
+ENV_WINDOW                  = 0x00
+ENV_SURFACE                 = 0x08
+ENV_VK_INSTANCE             = 0x10
+ENV_VK_PHDEVICE             = 0x18
+ENV_VK_DEVICE               = 0x20
+ENV_VK_GRAPHICSQUEUE        = 0x28
+ENV_VK_PRESENTQUEUE         = 0x30
+ENV_VK_SWAPCHAIN            = 0x38
+ENV_VK_SWAPCHAINIMAGES      = 0x40
+ENV_VK_SWAPCHAINIMAGECOUNT  = 0x48
+ENV_VK_SWAPCHAINIMAGEFORMAT = 0x50
+ENV_VK_SWAPCHAINEXTENT      = 0x58
 ; members end
 
 ;struc SDL_Event {
@@ -214,6 +223,14 @@ cleanup:
 
     mov           [rbp + 0x10], rcx ; mov Env* to shadow space
 
+
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_SWAPCHAINIMAGES]
+    test rcx, rcx
+    jz .L_cleanup_surface
+    call free
+
+    .L_cleanup_surface:
     ; SDL_Vulkan_DestroySurface
     mov           rax, [rbp + 0x10] ; load Env* pointer
     mov           rcx, [rax + ENV_VK_INSTANCE] ; environment.instance
@@ -724,16 +741,20 @@ create_swap_chain:
     ; get the imageCount, preferably as minImageCount + 1
     mov eax, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x00] ; minImageCount
     inc eax ; + 1
-    mov [rbp - SCSD_SZ - 0x14], eax
+    mov [rbp - SCSD_SZ - 0x14], eax           ; imageCount = minImageCount + 1
     mov ecx, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x04]
     test ecx, ecx ; maxImageCount == 0, skip
     jz .L_create_swap_chain_skip_image_clamp
     cmp eax, ecx 
     jle .L_create_swap_chain_skip_image_clamp ; imageCount <= maxImageCount, skip
     mov [rbp - SCSD_SZ - 0x14], ecx          ; imageCount = maxImageCount
-    
+    mov eax, ecx ; move it into eax so we have the endresult in eax in any scenario
     .L_create_swap_chain_skip_image_clamp:
+    mov r10d, eax
     mov rax, [rbp + 0x10] ; load env ptr
+
+    mov [rax + ENV_VK_SWAPCHAINIMAGECOUNT], r10d ; save the imageCount for the array
+
     mov DWORD [rbp - SCSD_SZ - 0x90 + 0x00], VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR ; .sType
     mov QWORD [rbp - SCSD_SZ - 0x90 + 0x08], 0x0 ; .pNext
     mov DWORD [rbp - SCSD_SZ - 0x90 + 0x10], 0x0 ; .flags
@@ -778,17 +799,47 @@ create_swap_chain:
     mov DWORD [rbp - SCSD_SZ - 0x90 + 0x5C], TRUE; .clipped
     mov QWORD [rbp - SCSD_SZ - 0x90 + 0x60], 0x0 ; .oldSwapchain
 
-
-
+    ; create the swap chain
     mov rax, [rbp + 0x10]
-    mov rcx, [rax + ENV_VK_DEVICE]  ; device
-    lea rdx, [rbp - SCSD_SZ - 0x90] ; &createInfo
-    mov r8,  0                      ; NULL
+    mov rcx, [rax + ENV_VK_DEVICE]    ; device
+    lea rdx, [rbp - SCSD_SZ - 0x90]   ; &createInfo
+    mov r8,  0                        ; NULL
     lea r9,  [rax + ENV_VK_SWAPCHAIN] ; &swapChain
     call vkCreateSwapchainKHR
     call check_vulkan_error
     test rax, rax
     jz .L_create_swap_chain_fail
+
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_SWAPCHAIN]
+    lea r8,  [rbp - SCSD_SZ - 0x14]
+    mov r9,  0
+    call vkGetSwapchainImagesKHR
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_swap_chain_fail
+    
+    mov ecx, [rbp - SCSD_SZ - 0x14]
+    shl ecx, 3  ; imageCount << 3 (imageCount * sizeof(VkImage))
+    call malloc
+    mov r10, [rbp + 0x10]
+    mov [r10 + ENV_VK_SWAPCHAINIMAGES], rax ; move malloc'd ptr into env*, free later on cleanup
+    test rax, rax
+    jz .L_create_swap_chain_fail
+
+    mov rcx, [r10 + ENV_VK_DEVICE]    ; device
+    mov rdx, [r10 + ENV_VK_SWAPCHAIN] ; swapChain
+    lea r8,  [rbp - SCSD_SZ - 0x14]   ; &imageCount
+    mov r9,  rax                      ; swapChainImages ptr to fill
+    call vkGetSwapchainImagesKHR
+
+    mov rax, [rbp + 0x10]
+    mov ecx, [rbp - SCSD_SZ - 0x20 + 0x00] ; surfaceFormat.format
+    mov [rax + ENV_VK_SWAPCHAINIMAGEFORMAT], ecx ; save the format in env
+
+    mov rcx, [rbp - SCSD_SZ - 0x10]         ; swapChainExtent
+    mov [rax + ENV_VK_SWAPCHAINEXTENT], rcx ; save the extent in env
 
     ; success:
     mov rax, TRUE
@@ -1295,42 +1346,6 @@ check_vulkan_error:
     add           rsp, 0x28
     ret
 ;================================= END check_vulkan_error ======================================
-
-; print_device_info:
-;     push          rbp
-;     mov           rbp, rsp
-;     sub           rsp, 0x340 + SHADOW_SPACE ; VkPhysicalDeviceProperties + 8 + SHADOW_SPACE
-
-;     lea           rdx, [rbp - 0x338]
-;     call          vkGetPhysicalDeviceProperties
-
-;     lea           rcx, [devprops_api]
-;     mov           rdx, [rbp - 0x338 + 0x00]
-;     call          SDL_Log
-
-;     lea           rcx, [devprops_driver]
-;     mov           rdx, [rbp - 0x338 + 0x04]
-;     call          SDL_Log
-
-;     lea           rcx, [devprops_vendor]
-;     mov           rdx, [rbp - 0x338 + 0x08]
-;     call          SDL_Log
-
-;     lea           rcx, [devprops_deviceI]
-;     mov           rdx, [rbp - 0x338 + 0x0C]
-;     call          SDL_Log
-
-;     lea           rcx, [devprops_deviceT]
-;     mov           rdx, [rbp - 0x338 + 0x10]
-;     call          SDL_Log
-
-;     lea           rcx, [devprops_deviceN]
-;     lea           rdx, [rbp - 0x338 + 0x14]
-;     call          SDL_Log
-
-;     add           rsp, 0x340 + SHADOW_SPACE
-;     pop           rbp
-;     ret
 
 section '.data' data readable writeable
     window_title         db "ASM SDL Window!", 0
