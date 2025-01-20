@@ -14,6 +14,7 @@ extrn SDL_GetError
 extrn SDL_Vulkan_CreateSurface
 extrn SDL_Vulkan_DestroySurface
 extrn SDL_Vulkan_GetInstanceExtensions
+extrn SDL_GetWindowSizeInPixels
 extrn vkCreateInstance
 extrn vkDestroyInstance
 extrn vkCreateDevice
@@ -36,6 +37,12 @@ width = 1280
 height = 720
 SDL_INIT_VIDEO = 0x20
 SDL_WINDOW_VULKAN = 0x0000000010000000
+
+VK_FORMAT_B8G8R8A8_SRGB = 50
+VK_COLOR_SPACE_SRGB_NONLINEAR_KHR = 0
+VK_PRESENT_MODE_IMMEDIATE_KHR = 0
+VK_PRESENT_MODE_MAILBOX_KHR = 1
+VK_PRESENT_MODE_FIFO_KHR = 2
 
 TRUE = 1
 FALSE = 0
@@ -994,6 +1001,91 @@ check_device_extension_support:
     pop rbp
     ret
 ;============================ END check_device_extension_support ===============================
+
+;============= choose_swap_chain_format - arg1: VkSurfaceFormatKHR* - arg2: count - ret: VkSurfaceFormatKHR (uint64) =============
+choose_swap_chain_format:
+    ; no need for new stack frame
+    push rsi
+    push rdi
+    mov rdi, rcx ; base pointer to VkSurfaceFormatKHR*
+    mov rsi, 0
+
+    .L_choose_swap_chain_format_loop_begin:
+    mov rax, [rdi + rsi * 0x08] ; availableFormats[i]
+    cmp DWORD [rax + 0x00], VK_FORMAT_B8G8R8A8_SRGB           ; .format
+    jne .L_choose_swap_chain_format_loop_end
+    cmp DWORD [rax + 0x04], VK_COLOR_SPACE_SRGB_NONLINEAR_KHR ; .colorSpace
+    je .L_choose_swap_chain_format_end           ; if both are equal, return the current
+    .L_choose_swap_chain_format_loop_end:
+    inc rsi
+    cmp rsi, rdx
+    jl .L_choose_swap_chain_format_loop_begin
+
+    ; default return 
+    mov rax, [rdi + 0x00] ; availableFormats[0]
+
+    .L_choose_swap_chain_format_end:
+    pop rdi
+    pop rsi
+    ret
+;=============================================== END choose_swap_chain_format ====================================================
+
+;============= choose_swap_present_mode - arg1: VkPresentModeKHR* - arg2: count - ret: VkPresentModeKHR (uint32) =============
+choose_swap_present_mode:
+    ; no need for new stack frame
+    push rsi
+    push rdi
+
+    mov rdi, rcx ; base pointer to VkPresentModeKHR*
+    mov rsi, 0
+
+    .L_choose_swap_present_mode_loop_begin:
+    mov rax, [rdi + rsi * 0x04] ; availablePresentModes[i]
+    cmp DWORD [rax + 0x00], VK_PRESENT_MODE_MAILBOX_KHR
+    jne .L_choose_swap_present_mode_loop_end
+    jmp .L_choose_swap_present_mode_end
+    .L_choose_swap_present_mode_loop_end:
+    inc rsi
+    cmp rsi, rdx
+    jl .L_choose_swap_present_mode_loop_begin
+
+    .L_choose_swap_present_mode_end_default:
+    mov rax, [rdi + 0x00] ; availableFormats[0]
+    .L_choose_swap_present_mode_end:
+    pop rdi
+    pop rsi
+    ret
+;============================================= END choose_swap_present_mode ==================================================
+
+;============= choose_swap_extent - arg1: Environment* - arg2: VkSurfaceCapabilitiesKHR* - ret: VkExtent2D (uint64) =============
+choose_swap_extent:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x10 + SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx
+    mov [rbp + 0x18], rdx
+
+    cmp DWORD [rdx + 0x08 + 0x00], 0xFFFFFFFF ; .currentExtent.width == uint32_max
+    je .L_choose_swap_extent_get_extent
+    mov rax, [rdx + 0x08] ; .currentExtent just return the current extent if one is already chosen
+    jmp .L_choose_swap_extent_end
+    .L_choose_swap_extent_get_extent:
+    mov rcx, [rcx + 0x00] ; window
+    lea rdx, [rbp - 0x04] ; &width
+    lea r8,  [rbp - 0x08] ; &height
+    call SDL_GetWindowSizeInPixels
+    mov eax, [rbp - 0x04] ; width
+    shl rax, 32           ; shift into upper bits
+    mov rcx, [rbp - 0x08] ;
+    or rax, rcx           ; lower bits of rax = width
+
+
+    .L_choose_swap_extent_end:
+    add rsp, 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;================================================== END choose_swap_extent ======================================================
 
 ;================ check_sdl_error - takes result from last SDL call - ret: bool ================
 check_sdl_error:
