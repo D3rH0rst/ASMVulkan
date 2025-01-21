@@ -19,6 +19,14 @@ fasm ./src/main.asm ./build/main.o
 if errorlevel 1 (
     goto end
 )
+:shaders
+@echo on
+glslc ./resource/simple.vert -o ./build/simple_vert.spv
+glslc ./resource/simple.frag -o ./build/simple_frag.spv
+@echo off
+if errorlevel 1 (
+    goto end
+)
 
 :link
 @echo on

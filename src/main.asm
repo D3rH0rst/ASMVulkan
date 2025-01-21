@@ -983,6 +983,19 @@ create_image_views:
     ret
 ;================================== END create_image_views =====================================
 
+;================= create_graphics_pipeline - arg1: Environment* - ret: bool ===================
+create_graphics_pipeline:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+
+    mov [rbp + 0x10], rcx
+
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+;=============================== END create_graphics_pipeline ==================================
+
 ;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
     push          rbp
@@ -1558,7 +1571,11 @@ section '.data' data readable writeable
     required_extensions_size = ($ - required_extensions) / 8
     required_extensions_size_aligned = ((required_extensions_size + 15) / 16) * 16
 
+    ;vertex_shader_data   file "../build/simple_vert.spv"
+    ;vertex_shader_data_size = $ - vertex_shader_data
 
+    ;fragment_shader_data file "../build/simple_frag.spv"
+    ;fragment_shader_data_size = $ - fragment_shader_data
 
 
 
