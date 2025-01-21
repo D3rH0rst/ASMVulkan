@@ -74,6 +74,7 @@ f1_0 = 0x3f800000
 ;    .swapChainImageCount  dq 0
 ;    .swapChainImageFormat dq 0
 ;    .swapChainExtent      dq 0
+;    .swapChainImageViews  dq 0
 ;}
 ENV_SZ                      = 0x60
 ; members
@@ -89,6 +90,7 @@ ENV_VK_SWAPCHAINIMAGES      = 0x40
 ENV_VK_SWAPCHAINIMAGECOUNT  = 0x48
 ENV_VK_SWAPCHAINIMAGEFORMAT = 0x50
 ENV_VK_SWAPCHAINEXTENT      = 0x58
+ENV_VK_SWAPCHAINIMAGEVIEWS  = 0x60
 ; members end
 
 ;struc SDL_Event {
@@ -853,6 +855,44 @@ create_swap_chain:
     pop rbp
     ret
 ;=================================== END create_swap_chain =====================================
+
+;==================== create_image_views - arg1: Environment* - ret: bool ======================
+create_image_views:
+    push rbp
+    push rdi
+    push rsi
+    mov rbp, rsp
+    sub rsp, 0x50 + SHADOW_SPACE ; VkImageViewCreateInfo
+
+    mov [rbp + 0x10], rcx
+
+    mov rcx, [rcx + ENV_VK_SWAPCHAINIMAGECOUNT]
+    shl rcx, 3 ; multiply by 8
+    call malloc
+    mov rcx, [rbp + 0x10]
+    mov [rcx + ENV_VK_SWAPCHAINIMAGEVIEWS], rax ; env->swapChainImageViews = malloc(env->swapChainImageCount * sizeof(VkImageView))
+    test rax, rax
+    jz .L_create_image_views_fail
+
+    mov rdi, [rcx + ENV_VK_SWAPCHAINIMAGES]
+    mov rsi, 0
+    .L_create_image_views_loop_begin:
+
+
+    ;success
+    mov rax, TRUE
+    jmp .L_create_image_views_end
+
+    .L_create_image_views_fail:
+    mov rax, FALSE
+    
+    .L_create_image_views_end:
+    add rsp, 0x50 + SHADOW_SPACE
+    pop rsi
+    pop rdi
+    pop rbp
+    ret
+;================================== END create_image_views =====================================
 
 ;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
