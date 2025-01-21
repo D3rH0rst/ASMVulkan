@@ -31,6 +31,8 @@ extrn vkGetPhysicalDeviceSurfacePresentModesKHR
 extrn vkCreateSwapchainKHR
 extrn vkDestroySwapchainKHR
 extrn vkGetSwapchainImagesKHR
+extrn vkCreateImageView
+extrn vkDestroyImageView
 extrn malloc
 extrn free
 extrn memset
@@ -48,11 +50,14 @@ VK_PRESENT_MODE_MAILBOX_KHR = 1
 VK_PRESENT_MODE_FIFO_KHR = 2
 
 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000
+VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO = 15
 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010
 VK_SHARING_MODE_EXCLUSIVE = 0
 VK_SHARING_MODE_CONCURRENT = 1
 VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR = 0x00000001
-
+VK_IMAGE_VIEW_TYPE_2D = 1
+VK_COMPONENT_SWIZZLE_IDENTITY = 0
+VK_IMAGE_ASPECT_COLOR_BIT = 0x00000001
 
 TRUE = 1
 FALSE = 0
@@ -131,6 +136,12 @@ start:
     sub           rsp, ENV_SZ + 0x10 + SHADOW_SPACE ; ENV_SZ(0x40) -> Environment, 0x10 -> return value, 0x20 -> Shadow Space
 
     mov           DWORD [rbp - ENV_SZ - 0x04], 1 ; store default return value
+
+    ; initialize ENV to 0
+    lea rcx, [rbp - ENV_SZ]
+    mov rdx, 0
+    mov r8, ENV_SZ
+    call memset
 
     lea           rcx, [rbp - ENV_SZ] ; Environment
     call          init
@@ -221,11 +232,33 @@ main_loop:
 cleanup:
     push          rbp
     mov           rbp, rsp
+    push          rdi
+    push          rsi
     sub           rsp, SHADOW_SPACE
 
     mov           [rbp + 0x10], rcx ; mov Env* to shadow space
 
+    mov rdi, [rcx + ENV_VK_SWAPCHAINIMAGEVIEWS]
+    mov rsi, 0
+    .L_cleanup_image_views_loop_begin:
+    mov rax, [rbp + 0x10]
+    cmp rsi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
+    jge .L_cleanup_image_views_ptr
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rdi + rsi * 0x08]
+    mov r8,  0x0
+    call vkDestroyImageView
+    inc rsi
+    jmp .L_cleanup_image_views_loop_begin
 
+    .L_cleanup_image_views_ptr:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
+    test rcx, rcx
+    jz .L_cleanup_free_swap_chain_images
+    call free
+
+    .L_cleanup_free_swap_chain_images:
     mov rax, [rbp + 0x10]
     mov rcx, [rax + ENV_VK_SWAPCHAINIMAGES]
     test rcx, rcx
@@ -284,6 +317,8 @@ cleanup:
     call          SDL_Quit
     mov           rax, 1
     add           rsp, SHADOW_SPACE
+    pop           rsi
+    pop           rdi
     pop           rbp
     ret
 ;======================================== END cleanup ==========================================
@@ -399,6 +434,17 @@ init_vulkan:
     mov           rdx, [rbp + 0x10]
     mov           rdx, [rdx + ENV_VK_SWAPCHAIN]
     call          SDL_Log
+
+
+    mov rcx, [rbp + 0x10]
+    call create_image_views
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_iv
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
+    call SDL_Log
 
     ; success
     mov           rax, 1
@@ -859,25 +905,68 @@ create_swap_chain:
 ;==================== create_image_views - arg1: Environment* - ret: bool ======================
 create_image_views:
     push rbp
+    mov rbp, rsp
     push rdi
     push rsi
-    mov rbp, rsp
     sub rsp, 0x50 + SHADOW_SPACE ; VkImageViewCreateInfo
 
     mov [rbp + 0x10], rcx
 
-    mov rcx, [rcx + ENV_VK_SWAPCHAINIMAGECOUNT]
-    shl rcx, 3 ; multiply by 8
+    mov ecx, [rcx + ENV_VK_SWAPCHAINIMAGECOUNT]
+    shl ecx, 3 ; multiply by 8
     call malloc
     mov rcx, [rbp + 0x10]
     mov [rcx + ENV_VK_SWAPCHAINIMAGEVIEWS], rax ; env->swapChainImageViews = malloc(env->swapChainImageCount * sizeof(VkImageView))
     test rax, rax
     jz .L_create_image_views_fail
 
+    mov rcx, [rbp + 0x10]
+
     mov rdi, [rcx + ENV_VK_SWAPCHAINIMAGES]
     mov rsi, 0
+    
     .L_create_image_views_loop_begin:
+    mov rax, [rbp + 0x10] ; env*
+    cmp esi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
+    jge .L_create_image_views_loop_end
+    
+    ; fill createinfo
+    mov DWORD [rbp - 0x10 - 0x50 + 0x00], VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO ; .sType
+    mov QWORD [rbp - 0x10 - 0x50 + 0x08], 0x0 ; .pNext
+    mov DWORD [rbp - 0x10 - 0x50 + 0x10], 0x0 ; .flags
+    mov rcx,  [rdi + rsi * 0x8]               ;  swapChainImages[i]
+    mov QWORD [rbp - 0x10 - 0x50 + 0x18], rcx ; .image = swapChainImages[i]
+    mov DWORD [rbp - 0x10 - 0x50 + 0x20], VK_IMAGE_VIEW_TYPE_2D ; .viewType
+    mov ecx,  [rax + ENV_VK_SWAPCHAINIMAGEFORMAT] ; env->swapChainFormat
+    mov DWORD [rbp - 0x10 - 0x50 + 0x24], ecx ; .format = env->swapChainFormat
 
+    ; components
+    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x00], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.r 
+    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x04], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.g
+    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x08], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.b
+    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x0C], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.a
+
+    ; subresourceRange
+    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x00], VK_IMAGE_ASPECT_COLOR_BIT     ; .subresourceRange.aspectMask
+    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x04], 0x0                           ; .subresourceRange.baseMipLevel
+    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x08], 0x1                           ; .subresourceRange.levelCount
+    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x0C], 0x0                           ; .subresourceRange.baseArrayLayer
+    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x10], 0x1                           ; .subresourceRange.layerCount
+
+    mov rcx, [rax + ENV_VK_DEVICE] ; env->device
+    lea rdx, [rbp - 0x10 - 0x50]   ; &createInfo
+    mov r8,  0x0                   ; NULL
+    mov r10,  [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
+    lea r9, [r10 + rsi * 0x8]      ; &swapChainImageViews[i]
+    call vkCreateImageView
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_image_views_fail
+
+    inc rsi
+    jmp .L_create_image_views_loop_begin
+
+    .L_create_image_views_loop_end:
 
     ;success
     mov rax, TRUE
@@ -1387,6 +1476,43 @@ check_vulkan_error:
     ret
 ;================================= END check_vulkan_error ======================================
 
+; print_device_info:
+;     push          rbp
+;     mov           rbp, rsp
+;     sub           rsp, 0x340 + SHADOW_SPACE ; VkPhysicalDeviceProperties + 8 + SHADOW_SPACE
+
+;     lea           rdx, [rbp - 0x338]
+;     call          vkGetPhysicalDeviceProperties
+
+;     lea           rcx, [devprops_api]
+;     mov           rdx, [rbp - 0x338 + 0x00]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_driver]
+;     mov           rdx, [rbp - 0x338 + 0x04]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_vendor]
+;     mov           rdx, [rbp - 0x338 + 0x08]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceI]
+;     mov           rdx, [rbp - 0x338 + 0x0C]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceT]
+;     mov           rdx, [rbp - 0x338 + 0x10]
+;     call          SDL_Log
+
+;     lea           rcx, [devprops_deviceN]
+;     lea           rdx, [rbp - 0x338 + 0x14]
+;     call          SDL_Log
+
+;     add           rsp, 0x340 + SHADOW_SPACE
+;     pop           rbp
+;     ret
+
+
 section '.data' data readable writeable
     window_title         db "ASM SDL Window!", 0
     log_sdl_error        db "SDL Error occured: %s", 0
@@ -1410,6 +1536,7 @@ section '.data' data readable writeable
     is_phd               db "Initialized Vulkan physical device [0x%llX]...", 0
     is_vkd               db "Initialized Vulkan device [0x%llX]...", 0
     is_sc                db "Initialized Vulkan swap chain [0x%llX]", 0
+    is_iv                db "Initialized Vulkan image views [0x%llX]", 0
     is_everything        db "Successfully initialized everything", 0
 
     devprops_api         db "devprops apiVersion: 0x%X", 0
