@@ -37,6 +37,10 @@ extrn vkCreateShaderModule
 extrn vkDestroyShaderModule
 extrn vkCreatePipelineLayout
 extrn vkDestroyPipelineLayout
+extrn vkCreateRenderPass
+extrn vkDestroyRenderPass
+extrn vkCreateGraphicsPipelines
+extrn vkDestroyPipeline
 extrn malloc
 extrn free
 extrn memset
@@ -71,7 +75,9 @@ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO = 23
 VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO = 24
 VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO = 26
 VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO = 27
+VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO = 28
 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = 30
+VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO = 38
 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010
 VK_SHARING_MODE_EXCLUSIVE = 0
 VK_SHARING_MODE_CONCURRENT = 1
@@ -89,6 +95,15 @@ VK_LOGIC_OP_COPY = 3
 VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 3
 VK_DYNAMIC_STATE_VIEWPORT = 0
 VK_DYNAMIC_STATE_SCISSOR = 1
+VK_ATTACHMENT_LOAD_OP_CLEAR = 1
+VK_ATTACHMENT_STORE_OP_STORE = 0
+VK_ATTACHMENT_LOAD_OP_DONT_CARE = 2
+VK_ATTACHMENT_STORE_OP_DONT_CARE = 1
+VK_IMAGE_LAYOUT_UNDEFINED = 0
+VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002
+VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2
+VK_PIPELINE_BIND_POINT_GRAPHICS = 0
+
 
 TRUE = 1
 FALSE = 0
@@ -114,8 +129,9 @@ f1_0 = 0x3f800000
 ;    .swapChainExtent      dq 0
 ;    .swapChainImageViews  dq 0
 ;    .vk_pipelineLayout    dq 0
+;    .vk_graphicsPipeline  dq 0
 ;}
-ENV_SZ                      = 0x70
+ENV_SZ                      = 0x80
 ; members
 ENV_WINDOW                  = 0x00
 ENV_SURFACE                 = 0x08
@@ -130,7 +146,9 @@ ENV_VK_SWAPCHAINIMAGECOUNT  = 0x48
 ENV_VK_SWAPCHAINIMAGEFORMAT = 0x50
 ENV_VK_SWAPCHAINEXTENT      = 0x58
 ENV_VK_SWAPCHAINIMAGEVIEWS  = 0x60
-ENV_VK_PIPELINELAYOUT       = 0x68
+ENV_VK_RENDERPASS           = 0x68
+ENV_VK_PIPELINELAYOUT       = 0x70
+ENV_VK_GRAPHICSPIPELINE     = 0x78
 ; members end
 
 ;struc SDL_Event {
@@ -280,8 +298,19 @@ cleanup:
     test rcx, rcx
     jz .L_cleanup_instance
     test rdx, rdx
-    jz .L_cleanup_image_views
+    jz .L_cleanup_render_pass
     call vkDestroyPipelineLayout
+
+    .L_cleanup_render_pass:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_RENDERPASS]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_image_views
+    call vkDestroyRenderPass
 
     .L_cleanup_image_views:
     mov rcx, [rbp + 0x10]
@@ -493,10 +522,27 @@ init_vulkan:
     mov rdx, [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
     call SDL_Log
 
+
+    mov rcx, [rbp + 0x10]
+    call create_render_pass
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_rp
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_RENDERPASS]
+    call SDL_Log
+
+
     mov rcx, [rbp + 0x10]
     call create_graphics_pipeline
     test rax, rax
     jz .L_init_vulkan_fail
+
+    mov rcx, is_gpl
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_GRAPHICSPIPELINE]
+    call SDL_Log
 
     ; success
     mov           rax, 1
@@ -1039,7 +1085,7 @@ create_image_views:
 create_graphics_pipeline:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + SHADOW_SPACE 
+    sub rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + 0x90 + 0x10 + SHADOW_SPACE 
     ; shadermodule1(dq), shadermodule2(dq), malloc1(dq), malloc2(dq), fileptr(dq), filesz1(dd), filsz2(dd), 2*VkPipelineShaderStageCreateInfo 
     ; VkPipelineVertexInputStateCreateInfo + VkPipelineInputAssemblyStateCreateInfo + VkPipelineViewportStateCreateInfo + VkPipelineRasterizationStateCreateInfo +
     ; VkPipelineColorBlendAttachmentState + VkPipelineColorBlendStateCreateInfo + VkPipelineDynamicStateCreateInfo 
@@ -1240,7 +1286,7 @@ create_graphics_pipeline:
     mov DWORD [rbp - 0x1E0 + 0x00], VK_DYNAMIC_STATE_VIEWPORT
     mov DWORD [rbp - 0x1E0 + 0x04], VK_DYNAMIC_STATE_SCISSOR
 
-    ; set upVkPipelineDynamicStateCreateInfo (0x20)
+    ; set up VkPipelineDynamicStateCreateInfo (0x20)
     mov DWORD [rbp - 0x200 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO ; .sType
     mov QWORD [rbp - 0x200 + 0x08], 0 ; .pNext
     mov DWORD [rbp - 0x200 + 0x10], 0 ; .flags
@@ -1256,13 +1302,62 @@ create_graphics_pipeline:
     mov DWORD [rbp - 0x230 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO ; .sType
     ; the rest is 0
 
-
+    ; create the pipelineLayout
     mov rax, [rbp + 0x10]
     mov rcx, [rax + ENV_VK_DEVICE]
     lea rdx, [rbp - 0x230]
     mov r8, 0
     lea r9, [rax + ENV_VK_PIPELINELAYOUT]
     call vkCreatePipelineLayout
+
+    ; set up VkGraphicsPipelineCreateInfo (0x90)
+    mov DWORD [rbp - 0x2C0 + 0x00], VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO ; .sType
+    mov QWORD [rbp - 0x2C0 + 0x08], 0   ; .pNext
+    mov DWORD [rbp - 0x2C0 + 0x10], 0   ; .flags
+    mov DWORD [rbp - 0x2C0 + 0x14], 2   ; .stageCount
+    lea rcx,  [rbp - 0x90]              ; &shaderStages
+    mov QWORD [rbp - 0x2C0 + 0x18], rcx ; .pStages = &shaderStages
+    lea rcx,  [rbp - 0xC0]              ; &vertexInputInfo
+    mov QWORD [rbp - 0x2C0 + 0x20], rcx ; .pVertexInputState = &vertexInputInfo
+    lea rcx,  [rbp - 0xE0]              ; &inputAssembly
+    mov QWORD [rbp - 0x2C0 + 0x28], rcx ; .pInputAssemblyState = &inputAssembly
+    mov QWORD [rbp - 0x2C0 + 0x30], 0   ; .pTesselationState = NULL
+    lea rcx,  [rbp - 0x100]             ; &viewportState
+    mov QWORD [rcx - 0x2C0 + 0x38], rcx ; .pViewportState = &viewportState
+    lea rcx,  [rbp - 0x140]             ; &rasterizer
+    mov QWORD [rbp - 0x2C0 + 0x40], rcx ; .pRasterizationState = &rasterizer 
+    lea rcx,  [rbp - 0x170]             ; &multisampling
+    mov QWORD [rbp - 0x2C0 + 0x48], rcx ; .pMultisampleState = &multisampling
+    mov QWORD [rbp - 0x2C0 + 0x50], 0   ; .pDepthStencilState = NULL
+    lea rcx,  [rbp - 0x1D0]             ; &colorBlending
+    mov QWORD [rbp - 0x2C0 + 0x58], rcx ; .pColorBlendState = &colorBlending
+    lea rcx,  [rbp - 0x200]             ; &dynamicState
+    mov QWORD [rbp - 0x2C0 + 0x60], rcx ; .pDynamicState = &dynamicState 
+    mov rax,  [rbp + 0x10]
+    mov rcx,  [rax + ENV_VK_PIPELINELAYOUT]
+    mov QWORD [rbp - 0x2C0 + 0x68], rcx ; .layout = env->pipelineLayout
+    mov rcx,  [rax + ENV_VK_RENDERPASS]
+    mov QWORD [rbp - 0x2C0 + 0x70], rcx ; .renderPass = env->renderPass
+    mov DWORD [rbp - 0x2C0 + 0x78], 0   ; .subpass
+    mov QWORD [rbp - 0x2C0 + 0x80], 0   ; .basePipelineHandle
+    mov DWORD [rbp - 0x2C0 + 0x88], 0   ; .basePipelineIndex
+
+    mov rcx, log_debug
+    call SDL_Log
+
+    ; create the pipeline
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, 0
+    mov r8, 1
+    lea r9, [rbp - 0x2C0]
+    mov QWORD [rsp + 0x20], 0 ; arg5
+    lea r10,  [rax + ENV_VK_GRAPHICSPIPELINE]
+    mov QWORD [rsp + 0x28], r10 ; arg6
+    call vkCreateGraphicsPipelines
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_graphics_pipeline_fail
 
 
     ; destroy fragment shader
@@ -1293,12 +1388,79 @@ create_graphics_pipeline:
     .L_create_graphics_pipeline_fail:
     mov rax, FALSE
     .L_create_graphics_pipeline_end:
-    add rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + SHADOW_SPACE
+    add rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + 0x90 + 0x10 + SHADOW_SPACE
     pop rbp
     ret
 ;=============================== END create_graphics_pipeline ==================================
 
+;==================== create_render_pass - arg1: Environment* - ret: bool ======================
+create_render_pass:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x30 + 0x50 + 0x40 + SHADOW_SPACE
 
+    mov [rbp + 0x10], rcx
+
+    ; set up VkAttachmentDescription (0x30 [0x24])
+    mov DWORD [rbp - 0x30 + 0x00], 0   ; .flags
+    mov eax,  [rcx + ENV_VK_SWAPCHAINIMAGEFORMAT]
+    mov DWORD [rbp - 0x30 + 0x04], eax ; .format
+    mov DWORD [rbp - 0x30 + 0x08], VK_SAMPLE_COUNT_1_BIT ; .samples
+    mov DWORD [rbp - 0x30 + 0x0C], VK_ATTACHMENT_LOAD_OP_CLEAR      ; .loadOp
+    mov DWORD [rbp - 0x30 + 0x10], VK_ATTACHMENT_STORE_OP_STORE     ; .storeOp
+    mov DWORD [rbp - 0x30 + 0x14], VK_ATTACHMENT_LOAD_OP_DONT_CARE  ; .stencilLoadOp
+    mov DWORD [rbp - 0x30 + 0x18], VK_ATTACHMENT_STORE_OP_DONT_CARE ; .stencilStoreOp
+    mov DWORD [rbp - 0x30 + 0x1C], VK_IMAGE_LAYOUT_UNDEFINED        ; .initialLayout
+    mov DWORD [rbp - 0x30 + 0x20], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR  ; .finalLayout
+
+    ; set up VkAttachmentReference (0x08)
+    mov DWORD [rbp - 0x08 + 0x00], 0                                        ; .attachment
+    mov DWORD [rbp - 0x08 + 0x04], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ; .layout
+
+    ; set up VkSubpassDescription (0x50 [0x48])
+    lea rcx, [rbp - 0x80]
+    mov rdx, 0
+    mov r8, 0x50
+    call memset
+    mov DWORD [rbp - 0x80 + 0x04], VK_PIPELINE_BIND_POINT_GRAPHICS ; .pipelineBindPoint
+    mov DWORD [rbp - 0x80 + 0x18], 1                               ; .colorAttachmentCount
+    lea rcx,  [rbp - 0x08] ; &colorAttachmentRef
+    mov QWORD [rbp - 0x80 + 0x20], rcx                             ; .pColorAttachments = &colorAttachmentRef
+
+    ; set up VkRenderPassCreateInfo (0x40)
+    mov DWORD [rbp - 0xC0 + 0x00], VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO ; .sType
+    mov QWORD [rbp - 0xC0 + 0x08], 0   ; .pNext
+    mov DWORD [rbp - 0xC0 + 0x10], 0   ; .flags
+    mov DWORD [rbp - 0xC0 + 0x14], 1   ; .attachmentCount
+    lea rcx,  [rbp - 0x30]             ; &colorAttachment
+    mov QWORD [rbp - 0xC0 + 0x18], rcx ; .pAttachments = &colorAttachment
+    mov DWORD [rbp - 0xC0 + 0x20], 1   ; .subpassCount
+    lea rcx,  [rbp - 0x80]             ; &subpass
+    mov QWORD [rbp - 0xC0 + 0x28], rcx ; .pSubpasses = &subpass
+
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    lea rdx, [rbp - 0xC0]
+    mov r8,  0
+    lea r9,  [rax + ENV_VK_RENDERPASS]
+    call vkCreateRenderPass
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_render_pass_fail
+
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_render_pass_end
+
+    .L_create_render_pass_fail:
+    mov rax, FALSE
+    
+    .L_create_render_pass_end:
+    add rsp, 0x30 + 0x50 + 0x40 + SHADOW_SPACE
+    pop rbp
+    ret
+;================================== END create_render_pass =====================================
 
 ;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
@@ -1881,6 +2043,8 @@ section '.data' data readable writeable
     is_vkd               db "Initialized Vulkan device [0x%llX]...", 0
     is_sc                db "Initialized Vulkan swap chain [0x%llX]", 0
     is_iv                db "Initialized Vulkan image views [0x%llX]", 0
+    is_rp                db "Initialized Vulkan render pass [0x%llX]", 0
+    is_gpl               db "Initialized Vulkan graphics pipeline [0x%llX]", 0
     is_everything        db "Successfully initialized everything", 0
 
     devprops_api         db "devprops apiVersion: 0x%X", 0
