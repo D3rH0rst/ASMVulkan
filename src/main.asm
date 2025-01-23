@@ -1085,12 +1085,36 @@ create_image_views:
 create_graphics_pipeline:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + 0x90 + 0x10 + SHADOW_SPACE 
-    ; shadermodule1(dq), shadermodule2(dq), malloc1(dq), malloc2(dq), fileptr(dq), filesz1(dd), filsz2(dd), 2*VkPipelineShaderStageCreateInfo 
-    ; VkPipelineVertexInputStateCreateInfo + VkPipelineInputAssemblyStateCreateInfo + VkPipelineViewportStateCreateInfo + VkPipelineRasterizationStateCreateInfo +
-    ; VkPipelineColorBlendAttachmentState + VkPipelineColorBlendStateCreateInfo + VkPipelineDynamicStateCreateInfo 
+    sub rsp, .last_var + 0x10 + SHADOW_SPACE 
 
-    mov [rbp + 0x10], rcx
+    .envptr = 0x10
+
+    .fs_filesize          = 0x04
+    .vs_filesize          = 0x08
+    .fileptr              = 0x10
+    .fs_codeptr           = 0x18
+    .vs_codeptr           = 0x20
+    .fs_shaderModule      = 0x28
+    .vs_shaderModule      = 0x30
+    .fs_shaderStageInfo   = 0x60
+    .vs_shaderStageInfo   = 0x90
+    .shaderStages         = 0x90 ; ptr to the first shaderstage (vs_shaderstageinfo)
+    .vertexInputInfo      = 0xC0
+    .inputAssembly        = 0xE0
+    .viewportState        = 0x110
+    .rasterizer           = 0x150
+    .multisampling        = 0x180
+    .colorBlendAttachment = 0x200
+    .colorBlending        = 0x240
+    .dynamicStates        = 0x250
+    .dynamicState         = 0x270
+    .pipelineLayoutInfo   = 0x2A0
+    .pipelineInfo         = 0x330
+
+    .last_var             = .pipelineInfo
+
+
+    mov [rbp + .envptr], rcx
 
     ; open vertex shader
     mov rcx, vs_filename
@@ -1098,7 +1122,7 @@ create_graphics_pipeline:
     call fopen
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x10], rax ; save file pointer
+    mov [rbp - .fileptr], rax ; save file pointer
     
     ; go to the end of the file
     mov rcx, rax
@@ -1107,28 +1131,28 @@ create_graphics_pipeline:
     call fseek
 
     ; retrieve the file size
-    mov rcx, [rbp - 0x10]
+    mov rcx, [rbp - .fileptr]
     call ftell
-    mov [rbp - 0x08], eax ; size of vs at [rbp - 0x08] (DWORD)
-    mov rcx, [rbp - 0x10]
+    mov [rbp - .vs_filesize], eax ; size of vs at [rbp - 0x08] (DWORD)
+    mov rcx, [rbp - .fileptr]
     call rewind
 
     ; malloc size of the data
-    mov ecx, [rbp - 0x08]
+    mov ecx, [rbp - .vs_filesize]
     call malloc
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x20], rax ; data pointer of vs at [rbp - 0x20]
+    mov [rbp - .vs_codeptr], rax ; data pointer of vs at [rbp - 0x20]
 
     ; read all contents into malloc'd buffer
     mov rcx, rax          ; data
     mov rdx, 1            ; elementSize
-    mov r8d, [rbp - 0x08] ; count
-    mov r9,  [rbp - 0x10] ; file
+    mov r8d, [rbp - .vs_filesize] ; count
+    mov r9,  [rbp - .fileptr] ; file
     call fread
     
     ; close the file after reading contents into buffer
-    mov rcx, [rbp - 0x10]
+    mov rcx, [rbp - .fileptr]
     call fclose
 
     ; open fragment shader
@@ -1137,7 +1161,7 @@ create_graphics_pipeline:
     call fopen
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x10], rax ; save file pointer
+    mov [rbp - .fileptr], rax ; save file pointer
     
     ; go to the end of the file
     mov rcx, rax
@@ -1146,211 +1170,211 @@ create_graphics_pipeline:
     call fseek
 
     ; retrieve the file size
-    mov rcx, [rbp - 0x10]
+    mov rcx, [rbp - .fileptr]
     call ftell
-    mov [rbp - 0x04], eax ; size of fs at [rbp - 0x04] (DWORD)
-    mov rcx, [rbp - 0x10]
+    mov [rbp - .fs_filesize], eax ; size of fs at [rbp - 0x04] (DWORD)
+    mov rcx, [rbp - .fileptr]
     call rewind
 
     ; malloc size of the data
-    mov ecx, [rbp - 0x04]
+    mov ecx, [rbp - .fs_filesize]
     call malloc
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x18], rax ; data pointer of fs at [rbp - 0x18]
+    mov [rbp - .fs_codeptr], rax ; data pointer of fs at [rbp - 0x18]
 
     ; read all contents into malloc'd buffer
     mov rcx, rax          ; data
     mov rdx, 1            ; elementSize
-    mov r8d, [rbp - 0x04] ; count
-    mov r9,  [rbp - 0x10] ; file
+    mov r8d, [rbp - .fs_filesize] ; count
+    mov r9,  [rbp - .fileptr] ; file
     call fread
     
     ; close the file after reading contents into buffer
-    mov rcx, [rbp - 0x10]
+    mov rcx, [rbp - .fileptr]
     call fclose
 
-    mov rcx, [rbp + 0x10] ; env*
-    mov rdx, [rbp - 0x20] ; vs_code
-    mov r8d, [rbp - 0x08] ; vs_code_size
+    mov rcx, [rbp + .envptr] ; env*
+    mov rdx, [rbp - .vs_codeptr] ; vs_code
+    mov r8d, [rbp - .vs_filesize] ; vs_code_size
     call create_shader_module
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x30], rax ; vertShaderModule at [rbp - 0x30]
+    mov [rbp - .vs_shaderModule], rax ; vertShaderModule at [rbp - 0x30]
 
-    mov rcx, [rbp + 0x10] ; env*
-    mov rdx, [rbp - 0x18] ; fs_code
-    mov r8d, [rbp - 0x04] ; fs_code_size
+    mov rcx, [rbp + .envptr] ; env*
+    mov rdx, [rbp - .fs_codeptr] ; fs_code
+    mov r8d, [rbp - .fs_filesize] ; fs_code_size
     call create_shader_module
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - 0x28], rax ; fragShaderModule at [rbp - 0x28]
+    mov [rbp - .fs_shaderModule], rax ; fragShaderModule at [rbp - 0x28]
 
     ; set up vertShaderStageInfo
-    mov DWORD [rbp - 0x90 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x90 + 0x08], 0   ; .pNext
-    mov DWORD [rbp - 0x90 + 0x10], 0   ; .flags
-    mov DWORD [rbp - 0x90 + 0x14], VK_SHADER_STAGE_VERTEX_BIT ; .stage
-    mov rax,  [rbp - 0x30]             ; vertShaderModule
-    mov QWORD [rbp - 0x90 + 0x18], rax ; .module
+    mov DWORD [rbp - .vs_shaderStageInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .vs_shaderStageInfo + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .vs_shaderStageInfo + 0x10], 0   ; .flags
+    mov DWORD [rbp - .vs_shaderStageInfo + 0x14], VK_SHADER_STAGE_VERTEX_BIT ; .stage
+    mov rax,  [rbp - .vs_shaderModule]             ; vertShaderModule
+    mov QWORD [rbp - .vs_shaderStageInfo + 0x18], rax ; .module
     mov rax, vs_shader_entry
-    mov QWORD [rbp - 0x90 + 0x20], rax ; pName
-    mov QWORD [rbp - 0x90 + 0x20], 0   ; .pSpecializationInfo
+    mov QWORD [rbp - .vs_shaderStageInfo + 0x20], rax ; pName
+    mov QWORD [rbp - .vs_shaderStageInfo + 0x28], 0   ; .pSpecializationInfo
 
     ; set up fragShaderStageInfo
-    mov DWORD [rbp - 0x60 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x60 + 0x08], 0   ; .pNext
-    mov DWORD [rbp - 0x60 + 0x10], 0   ; .flags
-    mov DWORD [rbp - 0x60 + 0x14], VK_SHADER_STAGE_FRAGMENT_BIT ; .stage
-    mov rax,  [rbp - 0x28]             ; fragShaderModule
-    mov QWORD [rbp - 0x60 + 0x18], rax ; .module
+    mov DWORD [rbp - .fs_shaderStageInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .fs_shaderStageInfo + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .fs_shaderStageInfo + 0x10], 0   ; .flags
+    mov DWORD [rbp - .fs_shaderStageInfo + 0x14], VK_SHADER_STAGE_FRAGMENT_BIT ; .stage
+    mov rax,  [rbp - .fs_shaderModule]             ; fragShaderModule
+    mov QWORD [rbp - .fs_shaderStageInfo + 0x18], rax ; .module
     mov rax, fs_shader_entry
-    mov QWORD [rbp - 0x60 + 0x20], rax ; .pName
-    mov QWORD [rbp - 0x60 + 0x20], 0   ; .pSpecializationInfo
+    mov QWORD [rbp - .fs_shaderStageInfo + 0x20], rax ; .pName
+    mov QWORD [rbp - .fs_shaderStageInfo + 0x28], 0   ; .pSpecializationInfo
 
-    ; array of those would be lea rcx, [rbp - 0x90]
+    ; array of those would be lea rcx, [rbp - .shaderStages]
 
     ; set up VkPipeplineVertexinputStateCreateInfo (0x30)
-    lea rcx, [rbp - 0xC0]
+    lea rcx, [rbp - .vertexInputInfo]
     mov rdx, 0
     mov r8, 0x30
     call memset
     ; fill structure
-    mov DWORD [rbp - 0xC0 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
+    mov DWORD [rbp - .vertexInputInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO
     ; rest is 0
 
     ; set up VkPipelineInputAssemblyStateCreateInfo (0x20)
-    mov DWORD [rbp - 0xE0 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
-    mov QWORD [rbp - 0xE0 + 0x08], 0 ; .pNext
-    mov DWORD [rbp - 0xE0 + 0x10], 0 ; .flags
-    mov DWORD [rbp - 0xE0 + 0x14], VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
-    mov DWORD [rbp - 0xE0 + 0x18], FALSE
+    mov DWORD [rbp - .inputAssembly + 0x00], VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO
+    mov QWORD [rbp - .inputAssembly + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .inputAssembly + 0x10], 0 ; .flags
+    mov DWORD [rbp - .inputAssembly + 0x14], VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+    mov DWORD [rbp - .inputAssembly + 0x18], FALSE
 
-    ; set up VkPipelineViewportStateCreateInfo (0x20)
-    lea rcx, [rbp - 0x100]
+    ; set up VkPipelineViewportStateCreateInfo (0x30)
+    lea rcx, [rbp - .viewportState]
     mov rdx, 0
-    mov r8,  0x20
+    mov r8,  0x30
     call memset
-    mov DWORD [rbp - 0x100 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO ; .sType
-    mov DWORD [rbp - 0x100 + 0x14], 1 ; .viewportCount
-    mov DWORD [rbp - 0x100 + 0x20], 1 ; .scissorCount
+    mov DWORD [rbp - .viewportState + 0x00], VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO ; .sType
+    mov DWORD [rbp - .viewportState + 0x14], 1 ; .viewportCount
+    mov DWORD [rbp - .viewportState + 0x20], 1 ; .scissorCount
     ; rest 0
 
     ; set up VkPipelineRasterizationStateCreateInfo (0x40)
-    mov DWORD [rbp - 0x140 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x140 + 0x08], 0     ; .pNext
-    mov DWORD [rbp - 0x140 + 0x10], 0     ; .flags
-    mov DWORD [rbp - 0x140 + 0x14], FALSE ; .depthClampEnable
-    mov DWORD [rbp - 0x140 + 0x18], FALSE ; .rasterizerDiscardEnable
-    mov DWORD [rbp - 0x140 + 0x1C], VK_POLYGON_MODE_FILL    ; .polygonMode
-    mov DWORD [rbp - 0x140 + 0x20], VK_CULL_MODE_BACK_BIT   ; .cullMode
-    mov DWORD [rbp - 0x140 + 0x24], VK_FRONT_FACE_CLOCKWISE ; .frontFace
-    mov DWORD [rbp - 0x140 + 0x28], FALSE ; .depthBiasEnable
-    mov DWORD [rbp - 0x140 + 0x2C], 0     ; .depthBiasConstantFactor
-    mov DWORD [rbp - 0x140 + 0x30], 0     ; .depthBiasClamp
-    mov DWORD [rbp - 0x140 + 0x34], 0     ; .depthBiasSlopeFactor
-    mov DWORD [rbp - 0x140 + 0x38], f1_0  ; .lineWidth
+    mov DWORD [rbp - .rasterizer + 0x00], VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .rasterizer + 0x08], 0     ; .pNext
+    mov DWORD [rbp - .rasterizer + 0x10], 0     ; .flags
+    mov DWORD [rbp - .rasterizer + 0x14], FALSE ; .depthClampEnable
+    mov DWORD [rbp - .rasterizer + 0x18], FALSE ; .rasterizerDiscardEnable
+    mov DWORD [rbp - .rasterizer + 0x1C], VK_POLYGON_MODE_FILL    ; .polygonMode
+    mov DWORD [rbp - .rasterizer + 0x20], VK_CULL_MODE_BACK_BIT   ; .cullMode
+    mov DWORD [rbp - .rasterizer + 0x24], VK_FRONT_FACE_CLOCKWISE ; .frontFace
+    mov DWORD [rbp - .rasterizer + 0x28], FALSE ; .depthBiasEnable
+    mov DWORD [rbp - .rasterizer + 0x2C], 0     ; .depthBiasConstantFactor
+    mov DWORD [rbp - .rasterizer + 0x30], 0     ; .depthBiasClamp
+    mov DWORD [rbp - .rasterizer + 0x34], 0     ; .depthBiasSlopeFactor
+    mov DWORD [rbp - .rasterizer + 0x38], f1_0  ; .lineWidth
 
     ; set up VkPipelineMultisampleStateCreateInfo (0x30)
-    lea rcx, [rbp - 0x170]
+    lea rcx, [rbp - .multisampling]
     mov rdx, 0
     mov r8,  0x30
     call memset
-    mov DWORD [rbp - 0x170 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO ; .sType
-    mov DWORD [rbp - 0x170 + 0x14], VK_SAMPLE_COUNT_1_BIT ; .rasterizationSamples
-    mov DWORD [rbp - 0x170 + 0x18], FALSE                 ; .sampleShadingEnable
+    mov DWORD [rbp - .multisampling + 0x00], VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO ; .sType
+    mov DWORD [rbp - .multisampling + 0x14], VK_SAMPLE_COUNT_1_BIT ; .rasterizationSamples
+    mov DWORD [rbp - .multisampling + 0x18], FALSE                 ; .sampleShadingEnable
     
     ; set up VkPipelineColorBlendAttachmentState (0x20)
-    lea rcx, [rbp - 0x190]
+    lea rcx, [rbp - .colorBlendAttachment]
     mov rdx, 0
     mov r8, 0x20
     call memset
-    ;mov DWORD [rbp - 0x190 + 0x00], FALSE ; .blendEnable <- memset already does that
-    mov DWORD [rbp - 0x190 + 0x1C], 0xFF ; .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
+    ;mov DWORD [rbp - 0x200 + 0x00], FALSE ; .blendEnable <- memset already does that
+    mov DWORD [rbp - .colorBlendAttachment + 0x1C], 0xFF ; .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT
 
     ; set up VkPipelineColorBlendStateCreateInfo (0x40 [0x38])
-    mov DWORD [rbp - 0x1D0 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x1D0 + 0x08], 0 ; .pNext
-    mov DWORD [rbp - 0x1D0 + 0x10], 0 ; .flags
-    mov DWORD [rbp - 0x1D0 + 0x14], FALSE ; .logicOpEnable
-    mov DWORD [rbp - 0x1D0 + 0x18], VK_LOGIC_OP_COPY ; .logicOp
-    mov DWORD [rbp - 0x1D0 + 0x1C], 1 ; .attachmentCount
-    lea rcx,  [rbp - 0x190]
-    mov QWORD [rbp - 0x1D0 + 0x20], rcx ; .pAttachments
-    mov DWORD [rbp - 0x1D0 + 0x28 + 0x00], 0 ; .blendConstants[0] 
-    mov DWORD [rbp - 0x1D0 + 0x28 + 0x04], 0 ; .blendConstants[1]
-    mov DWORD [rbp - 0x1D0 + 0x28 + 0x08], 0 ; .blendConstants[2]
-    mov DWORD [rbp - 0x1D0 + 0x28 + 0x0C], 0 ; .blendConstants[3]
+    mov DWORD [rbp - .colorBlending + 0x00], VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .colorBlending + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .colorBlending + 0x10], 0 ; .flags
+    mov DWORD [rbp - .colorBlending + 0x14], FALSE ; .logicOpEnable
+    mov DWORD [rbp - .colorBlending + 0x18], VK_LOGIC_OP_COPY ; .logicOp
+    mov DWORD [rbp - .colorBlending + 0x1C], 1 ; .attachmentCount
+    lea rcx,  [rbp - .colorBlendAttachment]
+    mov QWORD [rbp - .colorBlending + 0x20], rcx ; .pAttachments
+    mov DWORD [rbp - .colorBlending + 0x28 + 0x00], 0 ; .blendConstants[0] 
+    mov DWORD [rbp - .colorBlending + 0x28 + 0x04], 0 ; .blendConstants[1]
+    mov DWORD [rbp - .colorBlending + 0x28 + 0x08], 0 ; .blendConstants[2]
+    mov DWORD [rbp - .colorBlending + 0x28 + 0x0C], 0 ; .blendConstants[3]
 
     ; set up dynamicStates (0x10, count = 2)
-    mov DWORD [rbp - 0x1E0 + 0x00], VK_DYNAMIC_STATE_VIEWPORT
-    mov DWORD [rbp - 0x1E0 + 0x04], VK_DYNAMIC_STATE_SCISSOR
+    mov DWORD [rbp - .dynamicStates + 0x00], VK_DYNAMIC_STATE_VIEWPORT
+    mov DWORD [rbp - .dynamicStates + 0x04], VK_DYNAMIC_STATE_SCISSOR
 
     ; set up VkPipelineDynamicStateCreateInfo (0x20)
-    mov DWORD [rbp - 0x200 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x200 + 0x08], 0 ; .pNext
-    mov DWORD [rbp - 0x200 + 0x10], 0 ; .flags
-    mov DWORD [rbp - 0x200 + 0x14], 2 ; .dynamicStateCount
-    lea rcx,  [rbp - 0x1E0]
-    mov QWORD [rbp - 0x200 + 0x18], rcx ; .dynamicStateCount
+    mov DWORD [rbp - .dynamicState + 0x00], VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .dynamicState + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .dynamicState + 0x10], 0 ; .flags
+    mov DWORD [rbp - .dynamicState + 0x14], 2 ; .dynamicStateCount
+    lea rcx,  [rbp - .dynamicStates]
+    mov QWORD [rbp - 0x200 + 0x18], rcx ; .pDynamicStates
     
     ; set up VkPipelineLayoutCreateInfo (0x30)
-    lea rcx, [rbp - 0x230]
+    lea rcx, [rbp - .pipelineLayoutInfo]
     mov rdx, 0
     mov r8,  0x30
     call memset
-    mov DWORD [rbp - 0x230 + 0x00], VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO ; .sType
+    mov DWORD [rbp - .pipelineLayoutInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO ; .sType
     ; the rest is 0
 
     ; create the pipelineLayout
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
-    lea rdx, [rbp - 0x230]
+    lea rdx, [rbp - .pipelineLayoutInfo]
     mov r8, 0
     lea r9, [rax + ENV_VK_PIPELINELAYOUT]
     call vkCreatePipelineLayout
 
     ; set up VkGraphicsPipelineCreateInfo (0x90)
-    mov DWORD [rbp - 0x2C0 + 0x00], VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x2C0 + 0x08], 0   ; .pNext
-    mov DWORD [rbp - 0x2C0 + 0x10], 0   ; .flags
-    mov DWORD [rbp - 0x2C0 + 0x14], 2   ; .stageCount
-    lea rcx,  [rbp - 0x90]              ; &shaderStages
-    mov QWORD [rbp - 0x2C0 + 0x18], rcx ; .pStages = &shaderStages
-    lea rcx,  [rbp - 0xC0]              ; &vertexInputInfo
-    mov QWORD [rbp - 0x2C0 + 0x20], rcx ; .pVertexInputState = &vertexInputInfo
-    lea rcx,  [rbp - 0xE0]              ; &inputAssembly
-    mov QWORD [rbp - 0x2C0 + 0x28], rcx ; .pInputAssemblyState = &inputAssembly
-    mov QWORD [rbp - 0x2C0 + 0x30], 0   ; .pTesselationState = NULL
-    lea rcx,  [rbp - 0x100]             ; &viewportState
-    mov QWORD [rcx - 0x2C0 + 0x38], rcx ; .pViewportState = &viewportState
-    lea rcx,  [rbp - 0x140]             ; &rasterizer
-    mov QWORD [rbp - 0x2C0 + 0x40], rcx ; .pRasterizationState = &rasterizer 
-    lea rcx,  [rbp - 0x170]             ; &multisampling
-    mov QWORD [rbp - 0x2C0 + 0x48], rcx ; .pMultisampleState = &multisampling
-    mov QWORD [rbp - 0x2C0 + 0x50], 0   ; .pDepthStencilState = NULL
-    lea rcx,  [rbp - 0x1D0]             ; &colorBlending
-    mov QWORD [rbp - 0x2C0 + 0x58], rcx ; .pColorBlendState = &colorBlending
-    lea rcx,  [rbp - 0x200]             ; &dynamicState
-    mov QWORD [rbp - 0x2C0 + 0x60], rcx ; .pDynamicState = &dynamicState 
-    mov rax,  [rbp + 0x10]
+    mov DWORD [rbp - .pipelineInfo + 0x00], VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .pipelineInfo + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .pipelineInfo + 0x10], 0   ; .flags
+    mov DWORD [rbp - .pipelineInfo + 0x14], 2   ; .stageCount
+    lea rcx,  [rbp - .shaderStages]              ; &shaderStages
+    mov QWORD [rbp - .pipelineInfo + 0x18], rcx ; .pStages = &shaderStages
+    lea rcx,  [rbp - .vertexInputInfo]              ; &vertexInputInfo
+    mov QWORD [rbp - .pipelineInfo + 0x20], rcx ; .pVertexInputState = &vertexInputInfo
+    lea rcx,  [rbp - .inputAssembly]              ; &inputAssembly
+    mov QWORD [rbp - .pipelineInfo + 0x28], rcx ; .pInputAssemblyState = &inputAssembly
+    mov QWORD [rbp - .pipelineInfo + 0x30], 0   ; .pTesselationState = NULL
+    lea rcx,  [rbp - .viewportState]             ; &viewportState
+    mov QWORD [rcx - .pipelineInfo + 0x38], rcx ; .pViewportState = &viewportState
+    lea rcx,  [rbp - .rasterizer]             ; &rasterizer
+    mov QWORD [rbp - .pipelineInfo + 0x40], rcx ; .pRasterizationState = &rasterizer 
+    lea rcx,  [rbp - .multisampling]             ; &multisampling
+    mov QWORD [rbp - .pipelineInfo + 0x48], rcx ; .pMultisampleState = &multisampling
+    mov QWORD [rbp - .pipelineInfo + 0x50], 0   ; .pDepthStencilState = NULL
+    lea rcx,  [rbp - .colorBlending]             ; &colorBlending
+    mov QWORD [rbp - .pipelineInfo + 0x58], rcx ; .pColorBlendState = &colorBlending
+    lea rcx,  [rbp - .dynamicState]             ; &dynamicState
+    mov QWORD [rbp - .pipelineInfo + 0x60], rcx ; .pDynamicState = &dynamicState 
+    mov rax,  [rbp + .envptr]
     mov rcx,  [rax + ENV_VK_PIPELINELAYOUT]
-    mov QWORD [rbp - 0x2C0 + 0x68], rcx ; .layout = env->pipelineLayout
+    mov QWORD [rbp - .pipelineInfo + 0x68], rcx ; .layout = env->pipelineLayout
     mov rcx,  [rax + ENV_VK_RENDERPASS]
-    mov QWORD [rbp - 0x2C0 + 0x70], rcx ; .renderPass = env->renderPass
-    mov DWORD [rbp - 0x2C0 + 0x78], 0   ; .subpass
-    mov QWORD [rbp - 0x2C0 + 0x80], 0   ; .basePipelineHandle
-    mov DWORD [rbp - 0x2C0 + 0x88], 0   ; .basePipelineIndex
+    mov QWORD [rbp - .pipelineInfo + 0x70], rcx ; .renderPass = env->renderPass
+    mov DWORD [rbp - .pipelineInfo + 0x78], 0   ; .subpass
+    mov QWORD [rbp - .pipelineInfo + 0x80], 0   ; .basePipelineHandle
+    mov DWORD [rbp - .pipelineInfo + 0x88], 0   ; .basePipelineIndex
 
     mov rcx, log_debug
     call SDL_Log
 
     ; create the pipeline
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, 0
     mov r8, 1
-    lea r9, [rbp - 0x2C0]
+    lea r9, [rbp - .pipelineInfo]
     mov QWORD [rsp + 0x20], 0 ; arg5
     lea r10,  [rax + ENV_VK_GRAPHICSPIPELINE]
     mov QWORD [rsp + 0x28], r10 ; arg6
@@ -1361,24 +1385,24 @@ create_graphics_pipeline:
 
 
     ; destroy fragment shader
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
-    mov rdx, [rbp - 0x28]
+    mov rdx, [rbp - .fs_shaderModule]
     mov r8,  0
     call vkDestroyShaderModule
 
     ; destroy vertex shader
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
-    mov rdx, [rbp - 0x30]
+    mov rdx, [rbp - .vs_shaderModule]
     mov r8,  0
     call vkDestroyShaderModule
 
     ; free vs data
-    mov rcx, [rbp - 0x20]
+    mov rcx, [rbp - .vs_codeptr]
     call free
     ;free fs data
-    mov rcx, [rbp - 0x18]
+    mov rcx, [rbp - .fs_codeptr]
     call free
 
     ; success:
@@ -1388,7 +1412,7 @@ create_graphics_pipeline:
     .L_create_graphics_pipeline_fail:
     mov rax, FALSE
     .L_create_graphics_pipeline_end:
-    add rsp, 0x30 + 0x60 + 0x30 + 0x20 + 0x20 + 0x40 + 0x30 + 0x20 + 0x40 + 0x10 + 0x20 + 0x30 + 0x90 + 0x10 + SHADOW_SPACE
+    add rsp, .last_var + 0x10 + SHADOW_SPACE
     pop rbp
     ret
 ;=============================== END create_graphics_pipeline ==================================
@@ -2073,11 +2097,11 @@ section '.data' data readable writeable
     vs_shader_entry      db "main", 0
     fs_shader_entry      db "main", 0
 
-    ;vertex_shader_data   file "../build/simple_vert.spv"
-    ;vertex_shader_data_size = $ - vertex_shader_data
+    ; vertex_shader_data   file "../build/simple_vert.spv"
+    ; vertex_shader_data_size = $ - vertex_shader_data
 
-    ;fragment_shader_data file "../build/simple_frag.spv"
-    ;fragment_shader_data_size = $ - fragment_shader_data
+    ; fragment_shader_data file "../build/simple_frag.spv"
+    ; fragment_shader_data_size = $ - fragment_shader_data
 
 
 
