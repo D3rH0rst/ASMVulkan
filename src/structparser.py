@@ -1,56 +1,74 @@
-from pycparser import c_parser, c_ast, parse_file
-import ctypes
+from pycparser import c_ast, parse_file
+import subprocess
+import sys
 
-
-
-struct_name = "VkGraphicsPipelineCreateInfo"
-
-
-def get_type_size(member_type: c_ast.TypeDecl):
-    print(member_type)
     
 
-def define_ctypes_struct(struct_def: c_ast.Struct):
+def generate_struct_dumper(struct_def: c_ast.Struct, target_name: str):
+    
+    out_lines = []
+
+    
+        
+    out_lines.append("#include <stdio.h>")
+    out_lines.append("#include <vulkan/vulkan.h>")
+    out_lines.append("#define membersize(s, m) ((unsigned int)(sizeof(((s*)0)->m)))")
+    out_lines.append("int main(void) {")
+    
+    out_lines.append(f'    printf("{target_name}: 0x%.2X\\n", (unsigned int)sizeof({target_name}));')
+    out_lines.append('    printf("--------------------------------------------\\n");')
+    fields = []
+    max_field_len = 0
     for decl in struct_def.decls:
         decl: c_ast.Decl
         if not isinstance(decl.type, (c_ast.TypeDecl, c_ast.PtrDecl)):
             raise ValueError(f"Unsupported member type: {decl}")
-        
         field_name = decl.name
-        field_type = None
-        field_size = 0
-        field_offset = 0
-
-        is_ptr =  isinstance(decl.type, c_ast.PtrDecl)
-
-        if is_ptr:
-
-            field_type = decl.type.type.type.names[0] + "*"
-            field_size = 8
-        else:
-            field_type = decl.type.type.names[0]
-            field_size = get_type_size(decl.type)
+        if len(field_name) > max_field_len:
+            max_field_len = len(field_name)
+        fields.append(field_name)
         
-        #print(f"{field_type} {field_name} size: 0x{hex(field_size)}, offset: 0x{hex(field_offset)}")
+    
+    for field in fields:
+        padded_field = field.ljust(max_field_len)
+        out_lines.append(f'    printf("{target_name}.{padded_field}: 0x%.2X  0x%.2X  %s\\n", '
+                f'(unsigned int)__builtin_offsetof({target_name}, {field}), '
+                f'membersize({target_name}, {field}), '
+                f'membersize({target_name}, {field}) == 0x08 ? "QWORD" : membersize({target_name}, {field}) == 0x04 ? "DWORD" : "-");'
+            )
+    out_lines.append("    return 0;")
+    out_lines.append("}")
+
+    return '\n'.join(out_lines)
         
         
 
-        
-
-        
+def compile_clang(input_str, args):
+    command = ('clang', '-xc', *args, '-')
+    subprocess.run(command, input=input_str, encoding='utf-8')
 
 def main():
+
+    if len(sys.argv) < 2:
+        print(f"usage: python {sys.argv[0]} <structname>")
+        return
+
+    target_struct_name = sys.argv[1]
+
     ast: c_ast.FileAST = parse_file("./src/vkpreprocessed2.h")
 
     target_struct: c_ast.Struct = None
 
     for ext in ast.ext:
-        if isinstance(ext, c_ast.Typedef) and ext.name == struct_name:
+        if isinstance(ext, c_ast.Typedef) and ext.name == target_struct_name:
             target_struct = ext.type.type
-            break
-        
-    cstruct = define_ctypes_struct(target_struct)
+            break            
+    
 
+    clang_str = generate_struct_dumper(target_struct, target_struct_name)
+    outfile = "structdump.exe"
+    compile_clang(clang_str, [r'-IC:\VulkanSDK\1.3.296.0\Include', '-o', outfile])
+    subprocess.run([f'.\\{outfile}'])
 
 
             

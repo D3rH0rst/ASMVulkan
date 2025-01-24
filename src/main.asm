@@ -1113,86 +1113,23 @@ create_graphics_pipeline:
 
     .last_var             = .pipelineInfo
 
-
     mov [rbp + .envptr], rcx
 
-    ; open vertex shader
+    ; read vertex shader
     mov rcx, vs_filename
-    mov rdx, mode_rb
-    call fopen
+    lea rdx, [rbp - .vs_filesize]
+    call read_file
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - .fileptr], rax ; save file pointer
-    
-    ; go to the end of the file
-    mov rcx, rax
-    mov rdx, 0
-    mov r8,  SEEK_END
-    call fseek
+    mov [rbp - .vs_codeptr], rax
 
-    ; retrieve the file size
-    mov rcx, [rbp - .fileptr]
-    call ftell
-    mov [rbp - .vs_filesize], eax ; size of vs at [rbp - 0x08] (DWORD)
-    mov rcx, [rbp - .fileptr]
-    call rewind
-
-    ; malloc size of the data
-    mov ecx, [rbp - .vs_filesize]
-    call malloc
-    test rax, rax
-    jz .L_create_graphics_pipeline_fail
-    mov [rbp - .vs_codeptr], rax ; data pointer of vs at [rbp - 0x20]
-
-    ; read all contents into malloc'd buffer
-    mov rcx, rax          ; data
-    mov rdx, 1            ; elementSize
-    mov r8d, [rbp - .vs_filesize] ; count
-    mov r9,  [rbp - .fileptr] ; file
-    call fread
-    
-    ; close the file after reading contents into buffer
-    mov rcx, [rbp - .fileptr]
-    call fclose
-
-    ; open fragment shader
+    ; read fragment shader
     mov rcx, fs_filename
-    mov rdx, mode_rb
-    call fopen
+    lea rdx, [rbp - .fs_filesize]
+    call read_file
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-    mov [rbp - .fileptr], rax ; save file pointer
-    
-    ; go to the end of the file
-    mov rcx, rax
-    mov rdx, 0
-    mov r8,  SEEK_END
-    call fseek
-
-    ; retrieve the file size
-    mov rcx, [rbp - .fileptr]
-    call ftell
-    mov [rbp - .fs_filesize], eax ; size of fs at [rbp - 0x04] (DWORD)
-    mov rcx, [rbp - .fileptr]
-    call rewind
-
-    ; malloc size of the data
-    mov ecx, [rbp - .fs_filesize]
-    call malloc
-    test rax, rax
-    jz .L_create_graphics_pipeline_fail
-    mov [rbp - .fs_codeptr], rax ; data pointer of fs at [rbp - 0x18]
-
-    ; read all contents into malloc'd buffer
-    mov rcx, rax          ; data
-    mov rdx, 1            ; elementSize
-    mov r8d, [rbp - .fs_filesize] ; count
-    mov r9,  [rbp - .fileptr] ; file
-    call fread
-    
-    ; close the file after reading contents into buffer
-    mov rcx, [rbp - .fileptr]
-    call fclose
+    mov [rbp - .fs_codeptr], rax
 
     mov rcx, [rbp + .envptr] ; env*
     mov rdx, [rbp - .vs_codeptr] ; vs_code
@@ -1485,6 +1422,73 @@ create_render_pass:
     pop rbp
     ret
 ;================================== END create_render_pass =====================================
+
+;============== read_file - arg1: file_name - arg2: out_size_ptr - ret: data_ptr ===============
+read_file:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 0x20 + SHADOW_SPACE
+
+    .fileName = 0x10
+    .out_size_ptr = 0x18 
+
+    .fileSize = 0x04
+    .fileptr = 0x10
+    .dataptr = 0x18
+
+
+    mov [rbp + .fileName], rcx
+    mov [rbp + .out_size_ptr], rdx
+
+    ; open the file
+    ; rcx already has filename
+    mov rdx, mode_rb
+    call fopen
+    test rax, rax
+    jz .end
+    mov [rbp - .fileptr], rax
+    
+    ; seek to the end
+    mov rcx, rax
+    mov rdx, 0
+    mov r8,  SEEK_END
+    call fseek
+
+    ; retrieve the file size
+    mov rcx, [rbp -.fileptr]
+    call ftell
+    mov [rbp - .fileSize], eax ; save the file size (should get returned later in out_size_ptr)
+    mov rcx, [rbp - .fileptr]
+    call rewind
+
+    ; allocate memory for the data
+    mov ecx, [rbp - .fileSize]
+    call malloc
+    test rax, rax
+    jz .end
+    mov [rbp - .dataptr], rax
+    
+    mov rcx, rax
+    mov rdx, 1
+    mov r8d, [rbp - .fileSize]
+    mov r9,  [rbp - .fileptr]
+    call fread
+
+    mov rcx, [rbp - .fileptr]
+    call fclose
+
+    ; save the size in out_size_ptr
+    mov rcx, [rbp + .out_size_ptr]
+    mov edx, [rbp - .fileSize]
+    mov [rcx], edx 
+
+    mov rax, [rbp - .dataptr]
+
+    .end:
+    add rsp, 0x20 + SHADOW_SPACE
+    pop rbp
+    ret
+;====================================== END read_file ==========================================
 
 ;======== is_device_suitable - arg1: Environment* - arg2: VkPhysicalDevice - ret: bool =========
 is_device_suitable:
