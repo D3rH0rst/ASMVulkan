@@ -1116,10 +1116,6 @@ create_graphics_pipeline:
 
     mov [rbp + .envptr], rcx
 
-    mov rcx, log_ptr
-    mov edx, .pipelineInfo
-    call SDL_Log
-
     ; read vertex shader
     mov rcx, vs_filename
     lea rdx, [rbp - .vs_filesize]
@@ -1258,7 +1254,7 @@ create_graphics_pipeline:
     mov DWORD [rbp - .dynamicState + 0x10], 0 ; .flags
     mov DWORD [rbp - .dynamicState + 0x14], 2 ; .dynamicStateCount
     lea rcx,  [rbp - .dynamicStates]
-    mov QWORD [rbp - 0x200 + 0x18], rcx ; .pDynamicStates
+    mov QWORD [rbp - .dynamicState + 0x18], rcx ; .pDynamicStates
     
     ; set up VkPipelineLayoutCreateInfo (0x30)
     lea rcx, [rbp - .pipelineLayoutInfo]
@@ -1275,6 +1271,9 @@ create_graphics_pipeline:
     mov r8, 0
     lea r9, [rax + ENV_VK_PIPELINELAYOUT]
     call vkCreatePipelineLayout
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_graphics_pipeline_fail
 
     ; set up VkGraphicsPipelineCreateInfo (0x90)
     mov DWORD [rbp - .pipelineInfo + 0x00], VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO ; .sType
@@ -1363,57 +1362,67 @@ create_graphics_pipeline:
 create_render_pass:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + 0x50 + 0x40 + SHADOW_SPACE
+    sub rsp, .last_var + SHADOW_SPACE
 
-    mov [rbp + 0x10], rcx
+    .envptr = 0x10
+
+    .colorAttachment    =                    0x30 ; sizeof(VkAttachmentDescription) [0x24]
+    .colorAttachmentRef =                    0x08 ; sizeof(VkAttachmentReference) [fits below .colorAttachmern]
+    .subpass            = .colorAttachment + 0x50 ; sizeof(VkSubpassDescription) [0x48]
+    .renderPassInfo     = .subpass         + 0x40 ; sizeof(VkRenderPassCreateInfo)
+
+    .last_var = .renderPassInfo
+
+    mov [rbp + .envptr], rcx
 
     ; set up VkAttachmentDescription (0x30 [0x24])
-    mov DWORD [rbp - 0x30 + 0x00], 0   ; .flags
+    mov DWORD [rbp - .colorAttachment + 0x00], 0   ; .flags
     mov eax,  [rcx + ENV_VK_SWAPCHAINIMAGEFORMAT]
-    mov DWORD [rbp - 0x30 + 0x04], eax ; .format
-    mov DWORD [rbp - 0x30 + 0x08], VK_SAMPLE_COUNT_1_BIT ; .samples
-    mov DWORD [rbp - 0x30 + 0x0C], VK_ATTACHMENT_LOAD_OP_CLEAR      ; .loadOp
-    mov DWORD [rbp - 0x30 + 0x10], VK_ATTACHMENT_STORE_OP_STORE     ; .storeOp
-    mov DWORD [rbp - 0x30 + 0x14], VK_ATTACHMENT_LOAD_OP_DONT_CARE  ; .stencilLoadOp
-    mov DWORD [rbp - 0x30 + 0x18], VK_ATTACHMENT_STORE_OP_DONT_CARE ; .stencilStoreOp
-    mov DWORD [rbp - 0x30 + 0x1C], VK_IMAGE_LAYOUT_UNDEFINED        ; .initialLayout
-    mov DWORD [rbp - 0x30 + 0x20], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR  ; .finalLayout
+    mov DWORD [rbp - .colorAttachment + 0x04], eax ; .format
+    mov DWORD [rbp - .colorAttachment + 0x08], VK_SAMPLE_COUNT_1_BIT ; .samples
+    mov DWORD [rbp - .colorAttachment + 0x0C], VK_ATTACHMENT_LOAD_OP_CLEAR      ; .loadOp
+    mov DWORD [rbp - .colorAttachment + 0x10], VK_ATTACHMENT_STORE_OP_STORE     ; .storeOp
+    mov DWORD [rbp - .colorAttachment + 0x14], VK_ATTACHMENT_LOAD_OP_DONT_CARE  ; .stencilLoadOp
+    mov DWORD [rbp - .colorAttachment + 0x18], VK_ATTACHMENT_STORE_OP_DONT_CARE ; .stencilStoreOp
+    mov DWORD [rbp - .colorAttachment + 0x1C], VK_IMAGE_LAYOUT_UNDEFINED        ; .initialLayout
+    mov DWORD [rbp - .colorAttachment + 0x20], VK_IMAGE_LAYOUT_PRESENT_SRC_KHR  ; .finalLayout
 
     ; set up VkAttachmentReference (0x08)
-    mov DWORD [rbp - 0x08 + 0x00], 0                                        ; .attachment
-    mov DWORD [rbp - 0x08 + 0x04], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ; .layout
+    mov DWORD [rbp - .colorAttachmentRef + 0x00], 0                                        ; .attachment
+    mov DWORD [rbp - .colorAttachmentRef + 0x04], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ; .layout
 
     ; set up VkSubpassDescription (0x50 [0x48])
-    lea rcx, [rbp - 0x80]
+    lea rcx, [rbp - .subpass]
     mov rdx, 0
     mov r8, 0x50
     call memset
-    mov DWORD [rbp - 0x80 + 0x04], VK_PIPELINE_BIND_POINT_GRAPHICS ; .pipelineBindPoint
-    mov DWORD [rbp - 0x80 + 0x18], 1                               ; .colorAttachmentCount
-    lea rcx,  [rbp - 0x08] ; &colorAttachmentRef
-    mov QWORD [rbp - 0x80 + 0x20], rcx                             ; .pColorAttachments = &colorAttachmentRef
+    mov DWORD [rbp - .subpass + 0x04], VK_PIPELINE_BIND_POINT_GRAPHICS ; .pipelineBindPoint
+    mov DWORD [rbp - .subpass + 0x18], 1                               ; .colorAttachmentCount
+    lea rcx,  [rbp - .colorAttachmentRef] ; &colorAttachmentRef
+    mov QWORD [rbp - .subpass + 0x20], rcx                             ; .pColorAttachments = &colorAttachmentRef
 
     ; set up VkRenderPassCreateInfo (0x40)
-    mov DWORD [rbp - 0xC0 + 0x00], VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0xC0 + 0x08], 0   ; .pNext
-    mov DWORD [rbp - 0xC0 + 0x10], 0   ; .flags
-    mov DWORD [rbp - 0xC0 + 0x14], 1   ; .attachmentCount
-    lea rcx,  [rbp - 0x30]             ; &colorAttachment
-    mov QWORD [rbp - 0xC0 + 0x18], rcx ; .pAttachments = &colorAttachment
-    mov DWORD [rbp - 0xC0 + 0x20], 1   ; .subpassCount
-    lea rcx,  [rbp - 0x80]             ; &subpass
-    mov QWORD [rbp - 0xC0 + 0x28], rcx ; .pSubpasses = &subpass
+    mov DWORD [rbp - .renderPassInfo + 0x00], VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO ; .sType
+    mov QWORD [rbp - .renderPassInfo + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .renderPassInfo + 0x10], 0   ; .flags
+    mov DWORD [rbp - .renderPassInfo + 0x14], 1   ; .attachmentCount
+    lea rcx,  [rbp - .colorAttachment]             ; &colorAttachment
+    mov QWORD [rbp - .renderPassInfo + 0x18], rcx ; .pAttachments = &colorAttachment
+    mov DWORD [rbp - .renderPassInfo + 0x20], 1   ; .subpassCount
+    lea rcx,  [rbp - .subpass]             ; &subpass
+    mov QWORD [rbp - .renderPassInfo + 0x28], rcx ; .pSubpasses = &subpass
+    mov DWORD [rbp - .renderPassInfo + 0x30], 0   ; .dependencyCount
+    mov QWORD [rbp - .renderPassInfo + 0x38], 0   ; .pDependencies
 
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
-    lea rdx, [rbp - 0xC0]
+    lea rdx, [rbp - .renderPassInfo]
     mov r8,  0
     lea r9,  [rax + ENV_VK_RENDERPASS]
     call vkCreateRenderPass
     call check_vulkan_error
     test rax, rax
     jz .L_create_render_pass_fail
-
 
     ; success:
     mov rax, TRUE
@@ -1423,7 +1432,7 @@ create_render_pass:
     mov rax, FALSE
     
     .L_create_render_pass_end:
-    add rsp, 0x30 + 0x50 + 0x40 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;================================== END create_render_pass =====================================
@@ -2101,8 +2110,8 @@ section '.data' data readable writeable
 
     mode_rb              db "rb", 0
 
-    vs_filename          db "./build/simple_vert.spv", 0
-    fs_filename          db "./build/simple_frag.spv", 0
+    vs_filename          db "../build/simple_vert.spv", 0
+    fs_filename          db "../build/simple_frag.spv", 0
     vs_shader_entry      db "main", 0
     fs_shader_entry      db "main", 0
 
