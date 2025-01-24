@@ -1096,24 +1096,29 @@ create_graphics_pipeline:
     .vs_codeptr           = 0x20
     .fs_shaderModule      = 0x28
     .vs_shaderModule      = 0x30
-    .fs_shaderStageInfo   = 0x60
-    .vs_shaderStageInfo   = 0x90
-    .shaderStages         = 0x90 ; ptr to the first shaderstage (vs_shaderstageinfo)
-    .vertexInputInfo      = 0xC0
-    .inputAssembly        = 0xE0
-    .viewportState        = 0x110
-    .rasterizer           = 0x150
-    .multisampling        = 0x180
-    .colorBlendAttachment = 0x200
-    .colorBlending        = 0x240
-    .dynamicStates        = 0x250
-    .dynamicState         = 0x270
-    .pipelineLayoutInfo   = 0x2A0
-    .pipelineInfo         = 0x330
+
+    .fs_shaderStageInfo   = .vs_shaderModule      + 0x30 ; sizeof(VkPipelineShaderStageCreateInfo)
+    .vs_shaderStageInfo   = .fs_shaderStageInfo   + 0x30 ; sizeof(VkPipelineShaderStageCreateInfo)
+    .shaderStages         = .vs_shaderStageInfo          ; ptr to the first shaderstage (vs_shaderstageinfo)
+    .vertexInputInfo      = .shaderStages         + 0x30 ; sizeof(VkPipelineVertexInputStateCreateInfo) 
+    .inputAssembly        = .vertexInputInfo      + 0x20 ; sizeof(VkPipelineInputAssemblyStateCreateInfo) 
+    .viewportState        = .inputAssembly        + 0x30 ; sizeof(VkPipelineViewportStateCreateInfo)
+    .rasterizer           = .viewportState        + 0x40 ; sizeof(VkPipelineRasterizationStateCreateInfo)
+    .multisampling        = .rasterizer           + 0x30 ; sizeof(VkPipelineMultisampleStateCreateInfo)
+    .colorBlendAttachment = .multisampling        + 0x20 ; sizeof(VkPipelineColorBlendAttachmentState)
+    .colorBlending        = .colorBlendAttachment + 0x40 ; sizeof(VkPipelineColorBlendStateCreateInfo) [0x38]
+    .dynamicStates        = .colorBlending        + 0x10 ; 2 * enum aligned to 16 bytes
+    .dynamicState         = .dynamicStates        + 0x20 ; sizeof(VkPipelineDynamicStateCreateInfo)
+    .pipelineLayoutInfo   = .dynamicState         + 0x30 ; sizeof(VkPipelineLayoutCreateInfo)
+    .pipelineInfo         = .pipelineLayoutInfo   + 0x90 ; sizeof(VkGraphicsPipelineCreateInfo)
 
     .last_var             = .pipelineInfo
 
     mov [rbp + .envptr], rcx
+
+    mov rcx, log_ptr
+    mov edx, .pipelineInfo
+    call SDL_Log
 
     ; read vertex shader
     mov rcx, vs_filename
@@ -1147,7 +1152,7 @@ create_graphics_pipeline:
     jz .L_create_graphics_pipeline_fail
     mov [rbp - .fs_shaderModule], rax ; fragShaderModule at [rbp - 0x28]
 
-    ; set up vertShaderStageInfo
+    ; set up vertShaderStageInfo VkPipelineShaderStageCreateInfo (0x30)
     mov DWORD [rbp - .vs_shaderStageInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
     mov QWORD [rbp - .vs_shaderStageInfo + 0x08], 0   ; .pNext
     mov DWORD [rbp - .vs_shaderStageInfo + 0x10], 0   ; .flags
@@ -1171,7 +1176,7 @@ create_graphics_pipeline:
 
     ; array of those would be lea rcx, [rbp - .shaderStages]
 
-    ; set up VkPipeplineVertexinputStateCreateInfo (0x30)
+    ; set up VkPipelineVertexInputStateCreateInfo (0x30)
     lea rcx, [rbp - .vertexInputInfo]
     mov rdx, 0
     mov r8, 0x30

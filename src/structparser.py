@@ -20,7 +20,7 @@ def generate_struct_dumper(struct_def: c_ast.Struct, target_name: str):
     max_field_len = 0
     for decl in struct_def.decls:
         decl: c_ast.Decl
-        if not isinstance(decl.type, (c_ast.TypeDecl, c_ast.PtrDecl)):
+        if not isinstance(decl.type, (c_ast.TypeDecl, c_ast.PtrDecl, c_ast.ArrayDecl)):
             raise ValueError(f"Unsupported member type: {decl}")
         field_name = decl.name
         if len(field_name) > max_field_len:
@@ -61,12 +61,14 @@ def main():
         if isinstance(ext, c_ast.Typedef) and ext.name == target_struct_name:
             target_struct = ext.type.type
             break            
-    
+    else:
+        print(f"struct '{target_struct_name}' not found")
+        return
 
     clang_str = generate_struct_dumper(target_struct, target_struct_name)
     with tempfile.TemporaryDirectory() as tempdir:
         outfile = os.path.join(tempdir, "structdumper")
-        if compile_clang(clang_str, [*sys.argv[2:], '-o', outfile]) == 0:
+        if compile_clang(clang_str, [*sys.argv[2:], r'-IC:\VulkanSDK\1.3.296.0\Include','-o', outfile]) == 0:
             subprocess.run([f'{outfile}'])
     
 if __name__ == "__main__":
