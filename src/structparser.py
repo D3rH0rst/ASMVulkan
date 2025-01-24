@@ -1,15 +1,14 @@
 from pycparser import c_ast, parse_file
 import subprocess
 import sys
-
+import tempfile
+import os
     
 
 def generate_struct_dumper(struct_def: c_ast.Struct, target_name: str):
     
     out_lines = []
 
-    
-        
     out_lines.append("#include <stdio.h>")
     out_lines.append("#include <vulkan/vulkan.h>")
     out_lines.append("#define membersize(s, m) ((unsigned int)(sizeof(((s*)0)->m)))")
@@ -45,16 +44,15 @@ def generate_struct_dumper(struct_def: c_ast.Struct, target_name: str):
 
 def compile_clang(input_str, args):
     command = ('clang', '-xc', *args, '-')
-    subprocess.run(command, input=input_str, encoding='utf-8')
+    return subprocess.run(command, input=input_str, encoding='utf-8').returncode
 
 def main():
 
     if len(sys.argv) < 2:
-        print(f"usage: python {sys.argv[0]} <structname>")
+        print(f"usage: python {sys.argv[0]} <structname> <includepaths>")
         return
 
     target_struct_name = sys.argv[1]
-
     ast: c_ast.FileAST = parse_file("./src/vkpreprocessed2.h")
 
     target_struct: c_ast.Struct = None
@@ -66,13 +64,10 @@ def main():
     
 
     clang_str = generate_struct_dumper(target_struct, target_struct_name)
-    outfile = "structdump.exe"
-    compile_clang(clang_str, [r'-IC:\VulkanSDK\1.3.296.0\Include', '-o', outfile])
-    subprocess.run([f'.\\{outfile}'])
-
-
-            
-
+    with tempfile.TemporaryDirectory() as tempdir:
+        outfile = os.path.join(tempdir, "structdumper")
+        if compile_clang(clang_str, [*sys.argv[2:], '-o', outfile]) == 0:
+            subprocess.run([f'{outfile}'])
     
 if __name__ == "__main__":
     main()
