@@ -8,7 +8,7 @@ set "Wflags=-Wall -Wextra"
 set "Buildflags=" :: g means debug
 set "Outputfile=./build/ASMVulkan.exe"
 set "Includepaths=-I./include"
-set "Inputfiles=./build/main.o"
+set "Inputfiles=create_gp.o ./build/main.o"
 set "Linkerpaths=-L./lib"
 set "Linkerflags=-lSDL3 -lwinmm -lole32 -loleaut32 -lsetupapi -lgdi32 -limm32 -lversion -luuid -lvulkan-1"
 

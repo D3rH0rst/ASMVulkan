@@ -16,7 +16,7 @@ def generate_struct_dumper(struct_def: c_ast.Struct, target_name: str):
     
     out_lines.append(f'    printf("{target_name}: 0x%.2X\\n", (unsigned int)sizeof({target_name}));')
     out_lines.append('    printf("--------------------------------------------\\n");')
-    fields = []
+    fields: list[str] = []
     max_field_len = 0
     for decl in struct_def.decls:
         decl: c_ast.Decl

@@ -1,6 +1,7 @@
 format MS64 COFF
 
 public start as 'main'
+
 extrn SDL_Init
 extrn SDL_CreateWindow
 extrn SDL_DestroyWindow
@@ -52,6 +53,10 @@ extrn fread
 extrn fclose
 extrn rewind
 
+; debug
+extrn create_graphics_pipeline
+public read_file
+public create_shader_module
 
 width = 1280
 height = 720
@@ -1082,7 +1087,7 @@ create_image_views:
 ;================================== END create_image_views =====================================
 
 ;================= create_graphics_pipeline - arg1: Environment* - ret: bool ===================
-create_graphics_pipeline:
+create_graphics_pipeline_:
     push rbp
     mov rbp, rsp
     sub rsp, .last_var + 0x10 + SHADOW_SPACE 
@@ -2110,8 +2115,8 @@ section '.data' data readable writeable
 
     mode_rb              db "rb", 0
 
-    vs_filename          db "../build/simple_vert.spv", 0
-    fs_filename          db "../build/simple_frag.spv", 0
+    vs_filename          db "./build/simple_vert.spv", 0
+    fs_filename          db "./build/simple_frag.spv", 0
     vs_shader_entry      db "main", 0
     fs_shader_entry      db "main", 0
 

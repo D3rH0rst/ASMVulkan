@@ -4,5 +4,6 @@
 build/
 include/
 *.c
+!create_gp.c
 *.cpp
 *exe
