@@ -42,6 +42,19 @@ extrn vkCreateRenderPass
 extrn vkDestroyRenderPass
 extrn vkCreateGraphicsPipelines
 extrn vkDestroyPipeline
+extrn vkCreateFramebuffer
+extrn vkDestroyFramebuffer
+extrn vkCreateCommandPool
+extrn vkDestroyCommandPool
+extrn vkAllocateCommandBuffers
+extrn vkCmdBeginRenderPass
+extrn vkCmdEndRenderPass
+extrn vkCmdBindPipeline
+extrn vkCmdSetViewport
+extrn vkCmdSetScissor
+extrn vkBeginCommandBuffer
+extrn vkEndCommandBuffer
+extrn vkCmdDraw
 extrn malloc
 extrn free
 extrn memset
@@ -82,7 +95,12 @@ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO = 26
 VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO = 27
 VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO = 28
 VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO = 30
+VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO = 37
 VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO = 38
+VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO = 39
+VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO = 40
+VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO = 42
+VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO = 43
 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010
 VK_SHARING_MODE_EXCLUSIVE = 0
 VK_SHARING_MODE_CONCURRENT = 1
@@ -108,7 +126,9 @@ VK_IMAGE_LAYOUT_UNDEFINED = 0
 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002
 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2
 VK_PIPELINE_BIND_POINT_GRAPHICS = 0
-
+VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x00000002
+VK_COMMAND_BUFFER_LEVEL_PRIMARY = 0
+VK_SUBPASS_CONTENTS_INLINE = 0
 
 TRUE = 1
 FALSE = 0
@@ -136,7 +156,7 @@ f1_0 = 0x3f800000
 ;    .vk_pipelineLayout    dq 0
 ;    .vk_graphicsPipeline  dq 0
 ;}
-ENV_SZ                      = 0x80
+ENV_SZ                      = 0x100
 ; members
 ENV_WINDOW                  = 0x00
 ENV_SURFACE                 = 0x08
@@ -154,6 +174,9 @@ ENV_VK_SWAPCHAINIMAGEVIEWS  = 0x60
 ENV_VK_RENDERPASS           = 0x68
 ENV_VK_PIPELINELAYOUT       = 0x70
 ENV_VK_GRAPHICSPIPELINE     = 0x78
+ENV_VK_FRAMEBUFFERS         = 0x80
+ENV_VK_COMMANDPOOL          = 0x88
+ENV_VK_COMMANDBUFFER        = 0x90
 ; members end
 
 ;struc SDL_Event {
@@ -296,6 +319,51 @@ cleanup:
 
     mov           [rbp + 0x10], rcx ; mov Env* to shadow space
 
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_COMMANDPOOL]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_framebuffers
+    call vkDestroyCommandPool
+
+    .L_cleanup_framebuffers:
+    mov rcx, [rbp + 0x10]
+    mov rax, [rcx + ENV_VK_DEVICE]
+    test rax, rax 
+    jz .L_cleanup_instance
+    mov rdi, [rcx + ENV_VK_FRAMEBUFFERS]
+    mov rsi, 0
+    .L_cleanup_framebuffers_loop_begin:
+    mov rax, [rbp + 0x10]
+    cmp rsi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
+    jge .L_cleanup_framebuffers_ptr
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rdi + rsi * 0x08]
+    mov r8,  0x0
+    call vkDestroyFramebuffer
+    inc rsi
+    jmp .L_cleanup_framebuffers_loop_begin
+
+    .L_cleanup_framebuffers_ptr:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_FRAMEBUFFERS]
+    call free
+
+    .L_cleanup_pipeline:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_GRAPHICSPIPELINE]
+    mov r8, 0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_pipeline_layout
+    call vkDestroyPipeline
+
+    .L_cleanup_pipeline_layout:
     mov rax, [rbp + 0x10]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_PIPELINELAYOUT]
@@ -547,6 +615,39 @@ init_vulkan:
     mov rcx, is_gpl
     mov rax, [rbp + 0x10]
     mov rdx, [rax + ENV_VK_GRAPHICSPIPELINE]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10]
+    call create_framebuffers
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_fb
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_FRAMEBUFFERS]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10]
+    call create_command_pool
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_cp
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_COMMANDPOOL]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10]
+    call create_command_buffer
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_cb
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_COMMANDBUFFER]
     call SDL_Log
 
     ; success
@@ -1096,15 +1197,15 @@ create_graphics_pipeline_:
 
     .fs_filesize          = 0x04
     .vs_filesize          = 0x08
-    .fileptr              = 0x10
     .fs_codeptr           = 0x18
     .vs_codeptr           = 0x20
     .fs_shaderModule      = 0x28
     .vs_shaderModule      = 0x30
 
-    .fs_shaderStageInfo   = .vs_shaderModule      + 0x30 ; sizeof(VkPipelineShaderStageCreateInfo)
-    .vs_shaderStageInfo   = .fs_shaderStageInfo   + 0x30 ; sizeof(VkPipelineShaderStageCreateInfo)
-    .shaderStages         = .vs_shaderStageInfo          ; ptr to the first shaderstage (vs_shaderstageinfo)
+    .shaderStages         = .vs_shaderModule      + 0x60 ; ptr to the first shaderstage (vs_shaderstageinfo)
+    .ss_vs                =                         0x00 ; offset from .shaderStages
+    .ss_fs                =                         0x30 ; offset from .shaderStages
+
     .vertexInputInfo      = .shaderStages         + 0x30 ; sizeof(VkPipelineVertexInputStateCreateInfo) 
     .inputAssembly        = .vertexInputInfo      + 0x20 ; sizeof(VkPipelineInputAssemblyStateCreateInfo) 
     .viewportState        = .inputAssembly        + 0x30 ; sizeof(VkPipelineViewportStateCreateInfo)
@@ -1153,27 +1254,28 @@ create_graphics_pipeline_:
     jz .L_create_graphics_pipeline_fail
     mov [rbp - .fs_shaderModule], rax ; fragShaderModule at [rbp - 0x28]
 
-    ; set up vertShaderStageInfo VkPipelineShaderStageCreateInfo (0x30)
-    mov DWORD [rbp - .vs_shaderStageInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
-    mov QWORD [rbp - .vs_shaderStageInfo + 0x08], 0   ; .pNext
-    mov DWORD [rbp - .vs_shaderStageInfo + 0x10], 0   ; .flags
-    mov DWORD [rbp - .vs_shaderStageInfo + 0x14], VK_SHADER_STAGE_VERTEX_BIT ; .stage
+    ; set up vertShaderStageInfo VkPipelineShaderStageCreateInfo (0x30) [shaderStages[0]]
+    mov DWORD [rbp - .shaderStages + .ss_vs + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .shaderStages + .ss_vs + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .shaderStages + .ss_vs + 0x10], 0   ; .flags
+    mov DWORD [rbp - .shaderStages + .ss_vs + 0x14], VK_SHADER_STAGE_VERTEX_BIT ; .stage
     mov rax,  [rbp - .vs_shaderModule]             ; vertShaderModule
-    mov QWORD [rbp - .vs_shaderStageInfo + 0x18], rax ; .module
+    mov QWORD [rbp - .shaderStages + .ss_vs + 0x18], rax ; .module
     mov rax, vs_shader_entry
-    mov QWORD [rbp - .vs_shaderStageInfo + 0x20], rax ; pName
-    mov QWORD [rbp - .vs_shaderStageInfo + 0x28], 0   ; .pSpecializationInfo
+    mov QWORD [rbp - .shaderStages + .ss_vs + 0x20], rax ; pName
+    mov QWORD [rbp - .shaderStages + .ss_vs + 0x28], 0   ; .pSpecializationInfo
 
-    ; set up fragShaderStageInfo
-    mov DWORD [rbp - .fs_shaderStageInfo + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
-    mov QWORD [rbp - .fs_shaderStageInfo + 0x08], 0   ; .pNext
-    mov DWORD [rbp - .fs_shaderStageInfo + 0x10], 0   ; .flags
-    mov DWORD [rbp - .fs_shaderStageInfo + 0x14], VK_SHADER_STAGE_FRAGMENT_BIT ; .stage
-    mov rax,  [rbp - .fs_shaderModule]             ; fragShaderModule
-    mov QWORD [rbp - .fs_shaderStageInfo + 0x18], rax ; .module
+    ; set up fragShaderStageInfo VkPipelineShaderStageCreateInfo (0x30) [shaderStages[1]]
+    mov DWORD [rbp - .shaderStages + .ss_fs + 0x00], VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .shaderStages + .ss_fs + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .shaderStages + .ss_fs + 0x10], 0   ; .flags
+    mov DWORD [rbp - .shaderStages + .ss_fs + 0x14], VK_SHADER_STAGE_VERTEX_BIT ; .stage
+    mov rax,  [rbp - .fs_shaderModule]             ; vertShaderModule
+    mov QWORD [rbp - .shaderStages + .ss_fs + 0x18], rax ; .module
     mov rax, fs_shader_entry
-    mov QWORD [rbp - .fs_shaderStageInfo + 0x20], rax ; .pName
-    mov QWORD [rbp - .fs_shaderStageInfo + 0x28], 0   ; .pSpecializationInfo
+    mov QWORD [rbp - .shaderStages + .ss_fs + 0x20], rax ; pName
+    mov QWORD [rbp - .shaderStages + .ss_fs + 0x28], 0   ; .pSpecializationInfo
+
 
     ; array of those would be lea rcx, [rbp - .shaderStages]
 
@@ -1312,9 +1414,6 @@ create_graphics_pipeline_:
     mov QWORD [rbp - .pipelineInfo + 0x80], 0   ; .basePipelineHandle
     mov DWORD [rbp - .pipelineInfo + 0x88], 0   ; .basePipelineIndex
 
-    mov rcx, log_debug
-    call SDL_Log
-
     ; create the pipeline
     mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
@@ -1328,7 +1427,6 @@ create_graphics_pipeline_:
     call check_vulkan_error
     test rax, rax
     jz .L_create_graphics_pipeline_fail
-
 
     ; destroy fragment shader
     mov rax, [rbp + .envptr]
@@ -1441,6 +1539,316 @@ create_render_pass:
     pop rbp
     ret
 ;================================== END create_render_pass =====================================
+
+;==================== create_framebuffers - arg1: Environment* - ret: bool =====================
+create_framebuffers:
+    push rbp
+    mov rbp, rsp
+    push rsi
+    push rdi
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .envptr = 0x10
+    .framebufferInfo = 0x10 + 0x40 ; (rsi + rdi) + sizeof(VkFramebufferCreateInfo)
+    .attachments     = .framebufferInfo + 0x10
+    .last_var = .attachments
+
+    mov [rbp + .envptr], rcx
+
+    mov rcx, [rcx + ENV_VK_SWAPCHAINIMAGECOUNT]
+    shl rcx, 3  ; imageCount << 3 -> imageCount * 8 (sizeof(VkFramebuffer))
+    call malloc
+    test rax, rax
+    jz .L_create_framebuffers_fail
+    mov rcx, [rbp + .envptr]
+    mov [rcx + ENV_VK_FRAMEBUFFERS], rax
+
+    mov rdi, rax ; malloced frameBuffers base
+    mov rsi, 0 ; i = 0
+
+    .L_create_framebuffers_loop_begin:
+    mov r10, [rbp + .envptr]
+    cmp rsi, [r10 + ENV_VK_SWAPCHAINIMAGECOUNT]
+    jge .L_create_framebuffers_loop_end
+
+    mov r11, [r10 + ENV_VK_SWAPCHAINIMAGEVIEWS]
+    mov rax, [r11 + rsi * 0x8] ; swapChainImageViews[i]
+    mov [rbp - .attachments + 0x00], rax ; attachments[0] = swapChainImageViews[i]
+
+    ; set up VkFramebufferCreateInfo (0x40)
+    mov DWORD [rbp - .framebufferInfo + 0x00], VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO ; .sType
+    mov QWORD [rbp - .framebufferInfo + 0x08], 0     ; .pNext
+    mov DWORD [rbp - .framebufferInfo + 0x10], 0     ; .pflags
+    mov rax,  [r10 + ENV_VK_RENDERPASS]
+    mov QWORD [rbp - .framebufferInfo + 0x18], rax   ; .renderPass
+    mov DWORD [rbp - .framebufferInfo + 0x20], 1     ; .attachmentCount
+    lea rax,  [rbp - .attachments]
+    mov QWORD [rbp - .framebufferInfo + 0x28], rax   ; .pAttachments
+    mov eax,  [r10 + ENV_VK_SWAPCHAINEXTENT + 0x00]  ; swapChainExtent.width
+    mov DWORD [rbp - .framebufferInfo + 0x30], eax   ; .height = swapChainExtent.height
+    mov eax,  [r10 + ENV_VK_SWAPCHAINEXTENT + 0x04]  ; swapChainExtent.height
+    mov DWORD [rbp - .framebufferInfo + 0x34], eax   ; .width = swapChainExtent.width
+    mov DWORD [rbp - .framebufferInfo + 0x38], 1     ; .layers
+
+    mov rcx, [r10 + ENV_VK_DEVICE]     ; device
+    lea rdx, [rbp - .framebufferInfo]  ; &dramebufferInfo
+    mov r8, 0                          ; NULL
+    lea r9, [rdi + rsi * 0x08]         ; &frameBuffers[i]
+    call vkCreateFramebuffer
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_framebuffers_fail
+
+    inc rsi
+    jmp .L_create_framebuffers_loop_begin
+
+    .L_create_framebuffers_loop_end:
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_framebuffers_end
+
+    .L_create_framebuffers_fail:
+    xor rax, rax ; rax = FALSE
+    
+    .L_create_framebuffers_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rdi
+    pop rsi
+    pop rbp
+    ret
+;================================== END create_framebuffers ====================================
+
+;==================== create_command_pool - arg1: Environment* - ret: bool =====================
+create_command_pool:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .envptr = 0x10
+
+    .queueFamilyIndices = 0x10 ; (uint32 + uint32) aligned to 0x10
+    .poolInfo = .queueFamilyIndices + 0x20 ; sizeof(VkCommandPoolCreateInfo) [0x18]
+
+    .last_var = .poolInfo
+
+    mov [rbp + .envptr], rcx
+    
+    ; rcx has envptr
+    mov rdx, [rcx + ENV_VK_PHDEVICE]
+    lea r8, [rbp - .queueFamilyIndices]
+    call find_queue_families
+    test rax, rax
+    jz .L_create_command_pool_fail
+
+    ; set up VkCommandPoolCreateInfo (0x18)
+    mov DWORD [rbp - .poolInfo + 0x00], VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO ; .sType
+    mov QWORD [rbp - .poolInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .poolInfo + 0x10], VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT ; .flags
+    mov eax,  [rbp - .queueFamilyIndices + 0x00] ; queueFamilyIndices.graphicsFamily
+    mov DWORD [rbp - .poolInfo + 0x14], eax
+    
+    ; call vkCreateCommandPool
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    lea rdx, [rbp - .poolInfo]
+    mov r8,  0
+    lea r9,  [rax + ENV_VK_COMMANDPOOL]
+    call vkCreateCommandPool
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_command_pool_fail
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_command_pool_end
+
+    .L_create_command_pool_fail:
+    xor rax, rax ; rax = FALSE
+
+    .L_create_command_pool_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rbp
+    ret
+;================================== END create_command_pool ====================================
+
+;================== create_command_buffer - arg1: Environment* - ret: bool =====================
+create_command_buffer:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .envptr = 0x10
+
+    .allocInfo = 0x20 ; sizeof(VkCommandBufferAllocateInfo)
+
+    .last_var = .allocInfo
+
+    ; set up VkCommandBufferAllocateInfo (0x20)
+    mov DWORD [rbp - .allocInfo + 0x00], VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO ; .sType
+    mov QWORD [rbp - .allocInfo + 0x08], 0   ; .pNext
+    mov rax, [rcx + ENV_VK_COMMANDPOOL]
+    mov QWORD [rbp - .allocInfo + 0x10], rax ; commandPool
+    mov DWORD [rbp - .allocInfo + 0x18], VK_COMMAND_BUFFER_LEVEL_PRIMARY ; .level
+    mov DWORD [rbp - .allocInfo + 0x1C], 1   ; .commandBufferCount
+
+    ; call vkAllocateCommandBuffers
+    lea rdx, [rbp - .allocInfo]
+    lea r8,  [rcx + ENV_VK_COMMANDBUFFER]
+    mov rcx, [rcx + ENV_VK_DEVICE]
+    call vkAllocateCommandBuffers
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_command_buffer_fail
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_command_buffer_end
+
+    .L_create_command_buffer_fail:
+    xor rax, rax ; rax = FALSE
+
+    .L_create_command_buffer_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rbp
+    ret
+;================================= END create_command_buffer ===================================
+
+;================== record_command_buffer - arg1: Environment* - arg2: VkCommandBuffer - arg3: uint32 imageIndex - ret: bool =====================
+record_command_buffer:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + 0x10 + SHADOW_SPACE ; 0x10 for space for arg5 in vkCmdDraw
+
+    .envptr         = 0x10
+    .commandBuffer  = 0x18
+    .imageIndex     = 0x20
+
+    .beginInfo      =                   0x20 ; sizeof(VkCommandBufferBeginInfo)
+    .renderPassInfo = .beginInfo      + 0x40 ; sizeof(VkRenderPassBeginInfo)
+    .clearColor     = .renderPassInfo + 0x10 ; sizeof(VkClearValue)
+    .viewport       = .clearColor     + 0x20 ; sizeof(VkViewport) [0x18]
+    .scissor        = .viewport       + 0x10 ; sizeof(VkRect2D)
+
+    .last_var       = .scissor
+
+    mov [rbp + .envptr], rcx
+    mov [rbp + .commandBuffer], rdx
+    mov [rbp + .imageIndex], r8
+
+    ; set up VkCommandBufferBeginInfo (0x20)
+    mov DWORD [rbp - .beginInfo + 0x00], VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO ; .sType
+    mov QWORD [rbp - .beginInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .beginInfo + 0x10], 0 ; .flags
+    mov QWORD [rbp - .beginInfo + 0x18], 0 ; .pInheritanceInfo
+
+    ; call vkBeginCommandBuffer
+    mov rcx, rdx ; rdx contains the commandBuffer passed
+    lea rdx, [rbp - .beginInfo]
+    call vkBeginCommandBuffer
+    call check_vulkan_error
+    test rax, rax
+    jz .L_record_command_buffer_fail
+
+    ; set up VkRenderPassBeginInfo (0x40)
+    mov rax,  [rbp + .envptr]
+    mov DWORD [rbp - .renderPassInfo + 0x00], VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO ; .sType
+    mov QWORD [rbp - .renderPassInfo + 0x08], 0 ; .pNext 
+    mov rcx,  [rax + ENV_VK_RENDERPASS]
+    mov QWORD [rbp - .renderPassInfo + 0x10], rcx ; .renderPass
+    mov rcx,  [rax + ENV_VK_FRAMEBUFFERS]
+    mov edx,  [rbp + .imageIndex]
+    mov r8,   [rcx + rdx * 0x08] ; swapChainFramebuffers[imageIndex]
+    mov QWORD [rbp - .renderPassInfo + 0x18], r8  ; .framebuffer
+    mov QWORD [rbp - .renderPassInfo + 0x20 + 0x00], 0 ; .renderArea.offset = {0, 0}
+    mov rcx,  [rax + ENV_VK_SWAPCHAINEXTENT]
+    mov QWORD [rbp - .renderPassInfo + 0x20 + 0x08], rcx
+    mov DWORD [rbp - .renderPassInfo + 0x30], 1 ; .clearValueCount
+
+    ; fill VkClearValue
+    mov DWORD [rbp - .clearColor + 0x00], 0    ; r
+    mov DWORD [rbp - .clearColor + 0x04], 0    ; g
+    mov DWORD [rbp - .clearColor + 0x08], 0    ; b
+    mov DWORD [rbp - .clearColor + 0x0C], f1_0 ; a
+
+    lea rcx,  [rbp - .clearColor]
+    mov QWORD [rbp - .renderPassInfo + 0x38], rcx ; .pClearValues
+
+    mov rcx, [rbp + .commandBuffer]
+    lea rdx, [rbp - .renderPassInfo]
+    mov r8,  VK_SUBPASS_CONTENTS_INLINE
+    call vkCmdBeginRenderPass
+    ;---------------------------
+    mov rax, [rbp + .envptr]
+    mov rcx, [rbp + .commandBuffer]
+    mov rdx, VK_PIPELINE_BIND_POINT_GRAPHICS
+    mov r8,  [rax + ENV_VK_GRAPHICSPIPELINE]
+    call vkCmdBindPipeline
+
+    mov rax, [rbp + .envptr]
+
+    ; set up viewport
+    mov DWORD [rbp - .viewport + 0x00], 0 ; .x
+    mov DWORD [rbp - .viewport + 0x04], 0 ; .y
+    mov rcx,  [rax + ENV_VK_SWAPCHAINEXTENT]
+    cvtsi2ss xmm0, [rcx + 0x00] ; (float)swapChainExtent.width
+    movss DWORD [rbp - .viewport + 0x08], xmm0 ; .width = (float)swapChainExtent.width
+    cvtsi2ss xmm0, [rcx + 0x04] ; (float)swapChainExtent.height
+    movss DWORD [rbp - .viewport + 0x0C], xmm0; .height = (float)swapChainExtent.height
+    mov DWORD [rbp - .viewport + 0x10], 0    ; .minDepth
+    mov DWORD [rbp - .viewport + 0x14], f1_0 ; .maxDepth
+
+    ; call vkCmdSetViewport
+    mov rcx, [rbp + .commandBuffer]
+    mov rdx, 0
+    mov r8, 1
+    lea r9, [rbp - .viewport]
+    call vkCmdSetViewport
+
+    mov rax, [rbp + .envptr]
+
+    ; set up scissor
+    mov QWORD [rbp - .scissor + 0x00], 0   ; .offset
+    mov rcx, [rax + ENV_VK_SWAPCHAINEXTENT]
+    mov QWORD [rbp - .scissor + 0x08], rcx ; .extent    
+
+    ; call vkCmdSetScissor
+    mov rcx, [rbp + .commandBuffer]
+    mov rdx, 0
+    mov r8, 1
+    lea r9, [rbp - .scissor]
+    call vkCmdSetScissor
+
+    mov rcx, [rbp + .commandBuffer]
+    mov rdx, 3
+    mov r8, 1
+    mov r9, 0
+    mov QWORD [rsp + 0x20], 0
+    call vkCmdDraw
+
+    ;---------------------------
+    mov rcx, [rbp + .commandBuffer]
+    call vkCmdEndRenderPass
+
+    mov rcx, [rbp + .commandBuffer]
+    call vkEndCommandBuffer
+    call check_vulkan_error
+    test rax, rax
+    jz .L_record_command_buffer_fail
+
+    ; success
+    mov rax, TRUE
+    jmp .L_record_command_buffer_end
+
+    .L_record_command_buffer_fail:
+    xor rax, rax ; rax = FALSE
+
+    .L_record_command_buffer_end:
+    add rsp, .last_var + 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;========================================================== END record_command_buffer ============================================================
+
 
 ;============== read_file - arg1: file_name - arg2: out_size_ptr - ret: data_ptr ===============
 read_file:
@@ -1607,7 +2015,7 @@ find_queue_families:
 
     mov           [rbp + 0x10], rcx        ; save env* ptr
     mov           [rbp + 0x18], rdx        ; save VkPhysicalDevice
-    mov           [rbp + 0x20], r8         ; save QueueFamilyIndices* ptr#
+    mov           [rbp + 0x20], r8         ; save QueueFamilyIndices* ptr
 
     mov           QWORD [r8], -1           ; set both QueueFamilyIndices to -1
     mov           DWORD [rbp - 0x20 - 0x08], FALSE; presentSupport = 0
@@ -2069,7 +2477,7 @@ check_vulkan_error:
 section '.data' data readable writeable
     window_title         db "ASM SDL Window!", 0
     log_sdl_error        db "SDL Error occured: %s", 0
-    log_vulkan_error     db "Vulkan Error occured: 0x%X", 0
+    log_vulkan_error     db "Vulkan Error occured: %d", 0
     vk_app_name          db "Vulkan App", 0
     vk_engine_name       db "No Engine", 0
     no_suitable_dev      db "No suitable physical device found", 0
@@ -2092,6 +2500,9 @@ section '.data' data readable writeable
     is_iv                db "Initialized Vulkan image views [0x%llX]", 0
     is_rp                db "Initialized Vulkan render pass [0x%llX]", 0
     is_gpl               db "Initialized Vulkan graphics pipeline [0x%llX]", 0
+    is_fb                db "Initialized Vulkan framebuffers [0x%llX]", 0
+    is_cp                db "Initialized Vulkan command pool [0x%llX]", 0
+    is_cb                db "Initialized Vulkan command buffer [0x%llX]", 0
     is_everything        db "Successfully initialized everything", 0
 
     devprops_api         db "devprops apiVersion: 0x%X", 0

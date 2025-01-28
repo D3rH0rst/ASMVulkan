@@ -1,5 +1,6 @@
 #include <vulkan/vulkan.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 extern void* read_file(const char* filename, int *data_size);
 
@@ -156,6 +157,9 @@ char create_graphics_pipeline(Env* env) {
     
     vkDestroyShaderModule(env->vk_device, fragShaderModule, NULL);
     vkDestroyShaderModule(env->vk_device, vertShaderModule, NULL);
+
+    free(vertShaderCode);
+    free(fragShaderCode);
 
     return 1;
 }

@@ -8,7 +8,7 @@ set "Wflags=-Wall -Wextra"
 set "Buildflags=" :: g means debug
 set "Outputfile=./build/ASMVulkan.exe"
 set "Includepaths=-I./include"
-set "Inputfiles=create_gp.o ./build/main.o"
+set "Inputfiles=./build/create_gp.o ./build/main.o"
 set "Linkerpaths=-L./lib"
 set "Linkerflags=-lSDL3 -lwinmm -lole32 -loleaut32 -lsetupapi -lgdi32 -limm32 -lversion -luuid -lvulkan-1"
 
@@ -27,6 +27,10 @@ glslc ./resource/simple.frag -o ./build/simple_frag.spv
 if errorlevel 1 (
     goto end
 )
+
+@echo on
+%Compiler% -c .\src\create_gp.c -o .\build\create_gp.o -IC:\VulkanSDK\1.3.296.0\Include\
+@echo off
 
 :link
 @echo on
