@@ -55,6 +55,16 @@ extrn vkCmdSetScissor
 extrn vkBeginCommandBuffer
 extrn vkEndCommandBuffer
 extrn vkCmdDraw
+extrn vkCreateSemaphore
+extrn vkDestroySemaphore
+extrn vkCreateFence
+extrn vkDestroyFence
+extrn vkWaitForFences
+extrn vkResetFences
+extrn vkAcquireNextImageKHR
+extrn vkResetCommandBuffer
+extrn vkQueueSubmit
+extrn vkQueuePresentKHR
 extrn malloc
 extrn free
 extrn memset
@@ -83,6 +93,10 @@ VK_PRESENT_MODE_MAILBOX_KHR = 1
 VK_PRESENT_MODE_FIFO_KHR = 2
 
 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000
+VK_STRUCTURE_TYPE_PRESENT_INFO_KHR = 1000001001
+VK_STRUCTURE_TYPE_SUBMIT_INFO = 4
+VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8
+VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO = 9
 VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO = 15
 VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO = 16
 VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO = 18
@@ -129,6 +143,10 @@ VK_PIPELINE_BIND_POINT_GRAPHICS = 0
 VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x00000002
 VK_COMMAND_BUFFER_LEVEL_PRIMARY = 0
 VK_SUBPASS_CONTENTS_INLINE = 0
+VK_FENCE_CREATE_SIGNALED_BIT = 0x00000001
+VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x00000400
+VK_SUBPASS_EXTERNAL = -1 ; defined as (~0U) which is 0xFFFFFFFF
+VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x00000100
 
 TRUE = 1
 FALSE = 0
@@ -156,27 +174,30 @@ f1_0 = 0x3f800000
 ;    .vk_pipelineLayout    dq 0
 ;    .vk_graphicsPipeline  dq 0
 ;}
-ENV_SZ                      = 0x100
+ENV_SZ                      = 0x110
 ; members
-ENV_WINDOW                  = 0x00
-ENV_SURFACE                 = 0x08
-ENV_VK_INSTANCE             = 0x10
-ENV_VK_PHDEVICE             = 0x18
-ENV_VK_DEVICE               = 0x20
-ENV_VK_GRAPHICSQUEUE        = 0x28
-ENV_VK_PRESENTQUEUE         = 0x30
-ENV_VK_SWAPCHAIN            = 0x38
-ENV_VK_SWAPCHAINIMAGES      = 0x40
-ENV_VK_SWAPCHAINIMAGECOUNT  = 0x48
-ENV_VK_SWAPCHAINIMAGEFORMAT = 0x50
-ENV_VK_SWAPCHAINEXTENT      = 0x58
-ENV_VK_SWAPCHAINIMAGEVIEWS  = 0x60
-ENV_VK_RENDERPASS           = 0x68
-ENV_VK_PIPELINELAYOUT       = 0x70
-ENV_VK_GRAPHICSPIPELINE     = 0x78
-ENV_VK_FRAMEBUFFERS         = 0x80
-ENV_VK_COMMANDPOOL          = 0x88
-ENV_VK_COMMANDBUFFER        = 0x90
+ENV_WINDOW                  = 0x000
+ENV_SURFACE                 = 0x008
+ENV_VK_INSTANCE             = 0x010
+ENV_VK_PHDEVICE             = 0x018
+ENV_VK_DEVICE               = 0x020
+ENV_VK_GRAPHICSQUEUE        = 0x028
+ENV_VK_PRESENTQUEUE         = 0x030
+ENV_VK_SWAPCHAIN            = 0x038
+ENV_VK_SWAPCHAINIMAGES      = 0x040
+ENV_VK_SWAPCHAINIMAGECOUNT  = 0x048
+ENV_VK_SWAPCHAINIMAGEFORMAT = 0x050
+ENV_VK_SWAPCHAINEXTENT      = 0x058
+ENV_VK_SWAPCHAINIMAGEVIEWS  = 0x060
+ENV_VK_RENDERPASS           = 0x068
+ENV_VK_PIPELINELAYOUT       = 0x070
+ENV_VK_GRAPHICSPIPELINE     = 0x078
+ENV_VK_FRAMEBUFFERS         = 0x080
+ENV_VK_COMMANDPOOL          = 0x088
+ENV_VK_COMMANDBUFFER        = 0x090
+ENV_VK_IMGAVSEMAPHORE       = 0x098
+ENV_VK_RENFINSEMAPHORE      = 0x100
+ENV_VK_INFLIGHTFENCE        = 0x108
 ; members end
 
 ;struc SDL_Event {
@@ -299,6 +320,8 @@ main_loop:
     jnz           .L_main_loop_poll_event
 
     ;render everything here
+    mov rcx, [rbp + 0x10]
+    call draw_frame
 
     jmp           .L_main_loop_poll_event
 
@@ -308,6 +331,134 @@ main_loop:
     pop           rbp
     ret
 ;===================================== END main_loop ===========================================
+
+;========================= draw_frame - arg1: Environment* - ret: int ==========================
+draw_frame:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + 0x10 + SHADOW_SPACE
+
+    .envptr = 0x10
+
+    .imageIndex       =                     0x08 ; uint32
+    .submitInfo       = .imageIndex       + 0x48 ; sizeof(VkSubmitInfo)
+    .waitSemaphores   = .submitInfo       + 0x10 ; array of VkSemaphores of size 1
+    .waitStages       = .waitSemaphores   + 0x10 ; array of VkPipelineStageFlags of size 1
+    .signalSemaphores = .waitStages       + 0x10 ; array of VkSemaphores of size 1
+    .presentInfo      = .signalSemaphores + 0x40 ; sizeof(VkPresentInfoKHR)
+    .swapChains       = .presentInfo      + 0x10 ; array of VkSwapChainKHR of size 1
+    
+    .last_var = .swapChains
+
+    mov [rbp + .envptr], rcx
+
+    lea r8, [rcx + ENV_VK_INFLIGHTFENCE]
+    mov rcx, [rcx + ENV_VK_DEVICE]
+    mov rdx, 1
+    mov r9, TRUE
+    mov QWORD [rsp + 0x20], -1 ; arg5 = UINT64_MAX
+    call vkWaitForFences
+
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, 1
+    lea r8, [rax + ENV_VK_INFLIGHTFENCE]
+    call vkResetFences
+
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_SWAPCHAIN]
+    mov r8, -1
+    mov r9, [rax + ENV_VK_IMGAVSEMAPHORE]
+    mov QWORD [rsp + 0x20], 0
+    lea rax, [rbp - .imageIndex]
+    mov QWORD [rsp + 0x28], rax
+    call vkAcquireNextImageKHR
+
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_COMMANDBUFFER]
+    mov rdx, 0
+    call vkResetCommandBuffer
+
+    mov rcx, [rbp + .envptr]
+    mov rdx, [rcx + ENV_VK_COMMANDBUFFER]
+    mov r8d, [rbp - .imageIndex]
+    call record_command_buffer
+
+    mov rax, [rbp + .envptr]
+
+    ; set up VkSubmitInfo (0x48)
+    mov DWORD [rbp - .submitInfo + 0x00], VK_STRUCTURE_TYPE_SUBMIT_INFO ; .sType
+    mov QWORD [rbp - .submitInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .submitInfo + 0x10], 1 ; .waitSemaphoreCount
+
+    mov rcx,  [rax + ENV_VK_IMGAVSEMAPHORE]
+    mov QWORD [rbp - .waitSemaphores + 0x00], rcx
+    lea rcx,  [rbp - .waitSemaphores]         ; waitSemaphores
+    mov QWORD [rbp - .submitInfo + 0x18], rcx ; .pWaitSemaphores
+
+    mov DWORD [rbp - .waitStages + 0x00], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+    lea rcx,  [rbp - .waitStages]             ; waitStages
+    mov QWORD [rbp - .submitInfo + 0x20], rcx ; .pWaitDstStageMask
+
+    mov DWORD [rbp - .submitInfo + 0x28], 1   ; .commandBufferCount
+    lea rcx,  [rax + ENV_VK_COMMANDBUFFER]    ; &env->commandBuffer
+    mov QWORD [rbp - .submitInfo + 0x30], rcx ; .pCommandBuffers
+
+    mov DWORD [rbp - .submitInfo + 0x38], 1   ; .signalSemaphoreCount
+
+    mov rcx, [rax + ENV_VK_RENFINSEMAPHORE]
+    mov QWORD [rbp - .signalSemaphores + 0x00], rcx
+    lea rcx, [rbp - .signalSemaphores]
+    mov QWORD [rbp -.submitInfo + 0x40], rcx  ; .pSignalSemaphores
+
+    ; call vkQueueSubmit
+    mov rcx, [rax + ENV_VK_GRAPHICSQUEUE]
+    mov rdx, 1
+    lea r8, [rbp - .submitInfo]
+    mov r9, [rax + ENV_VK_INFLIGHTFENCE]
+    call vkQueueSubmit
+    call check_vulkan_error
+    test rax, rax
+    jz .L_draw_frame_fail
+
+    mov rax, [rbp + .envptr]
+
+    ; set up VkPresentInfoKHR (0x40)
+    mov DWORD [rbp - .presentInfo + 0x00], VK_STRUCTURE_TYPE_PRESENT_INFO_KHR ; .sType
+    mov QWORD [rbp - .presentInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .presentInfo + 0x10], 1 ; .waitSemaphoreCount
+
+    lea rcx,  [rbp - .waitSemaphores]
+    mov QWORD [rbp - .presentInfo + 0x18], rcx ; .pWaitSemaphores
+
+    mov DWORD [rbp - .presentInfo + 0x20], 1   ; .swapchainCount
+    
+    mov rcx,  [rax + ENV_VK_SWAPCHAIN]
+    mov QWORD [rbp - .swapChains + 0x00], rcx 
+    lea rcx,  [rbp - .swapChains]
+    mov QWORD [rbp - .presentInfo + 0x28], rcx ; .pSwapchains
+
+    lea rcx, [rbp - .imageIndex]
+    mov QWORD [rbp - .presentInfo + 0x30], rcx ; .pImageIndices
+    mov QWORD [rbp - .presentInfo + 0x38], 0   ; .pResults
+
+    mov rcx, [rax + ENV_VK_PRESENTQUEUE]
+    lea rdx, [rbp - .presentInfo]
+    call vkQueuePresentKHR
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_draw_frame_end
+
+    .L_draw_frame_fail:
+    xor rax, rax ; rax = FALSE
+
+    .L_draw_frame_end:
+    add rsp, .last_var + 0x10 + SHADOW_SPACE
+    pop rbp
+    ret
+;===================================== END draw_frame ==========================================
 
 ;========================== cleanup - arg1: Environment* - ret: bool ===========================
 cleanup:
@@ -319,6 +470,40 @@ cleanup:
 
     mov           [rbp + 0x10], rcx ; mov Env* to shadow space
 
+    .L_cleanup_rf_semaphore:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_RENFINSEMAPHORE]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_ia_semaphore
+    call vkDestroySemaphore
+
+    .L_cleanup_ia_semaphore:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_IMGAVSEMAPHORE]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_if_fence
+    call vkDestroySemaphore
+
+    .L_cleanup_if_fence:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    mov rdx, [rax + ENV_VK_INFLIGHTFENCE]
+    mov r8,  0
+    test rcx, rcx
+    jz .L_cleanup_instance
+    test rdx, rdx
+    jz .L_cleanup_command_pool
+    call vkDestroyFence
+
+    .L_cleanup_command_pool:
     mov rax, [rbp + 0x10]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_COMMANDPOOL]
@@ -648,6 +833,19 @@ init_vulkan:
     mov rcx, is_cb
     mov rax, [rbp + 0x10]
     mov rdx, [rax + ENV_VK_COMMANDBUFFER]
+    call SDL_Log
+
+
+    mov rcx, [rbp + 0x10]
+    call create_sync_objects
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+    mov rcx, is_so
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_VK_IMGAVSEMAPHORE]
+    mov r8,  [rax + ENV_VK_RENFINSEMAPHORE]
+    mov r9,  [rax + ENV_VK_INFLIGHTFENCE]
     call SDL_Log
 
     ; success
@@ -1470,11 +1668,12 @@ create_render_pass:
     .envptr = 0x10
 
     .colorAttachment    =                    0x30 ; sizeof(VkAttachmentDescription) [0x24]
-    .colorAttachmentRef =                    0x08 ; sizeof(VkAttachmentReference) [fits below .colorAttachmern]
+    .colorAttachmentRef =                    0x08 ; sizeof(VkAttachmentReference) [fits below .colorAttachment]
     .subpass            = .colorAttachment + 0x50 ; sizeof(VkSubpassDescription) [0x48]
     .renderPassInfo     = .subpass         + 0x40 ; sizeof(VkRenderPassCreateInfo)
+    .dependency         = .renderPassInfo  + 0x20 ; sizeof(VkSubpassDependency) [0x1C]
 
-    .last_var = .renderPassInfo
+    .last_var = .dependency
 
     mov [rbp + .envptr], rcx
 
@@ -1504,6 +1703,16 @@ create_render_pass:
     lea rcx,  [rbp - .colorAttachmentRef] ; &colorAttachmentRef
     mov QWORD [rbp - .subpass + 0x20], rcx                             ; .pColorAttachments = &colorAttachmentRef
 
+    ; set up VkSubpassDependency (0x20)
+    mov DWORD [rbp - .dependency + 0x00], VK_SUBPASS_EXTERNAL                           ; .srcSubpass
+    mov DWORD [rbp - .dependency + 0x04], 0                                             ; .dstSubpass
+    mov DWORD [rbp - .dependency + 0x08], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ; .srcStageMask
+    mov DWORD [rbp - .dependency + 0x0C], VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT ; .dstStageMask
+    mov DWORD [rbp - .dependency + 0x10], 0                                             ; .srcAccessMask
+    mov DWORD [rbp - .dependency + 0x14], VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT          ; .srcAccessMask
+    mov DWORD [rbp - .dependency + 0x18], 0                                             ; .dependencyFlags
+
+
     ; set up VkRenderPassCreateInfo (0x40)
     mov DWORD [rbp - .renderPassInfo + 0x00], VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO ; .sType
     mov QWORD [rbp - .renderPassInfo + 0x08], 0   ; .pNext
@@ -1514,8 +1723,9 @@ create_render_pass:
     mov DWORD [rbp - .renderPassInfo + 0x20], 1   ; .subpassCount
     lea rcx,  [rbp - .subpass]             ; &subpass
     mov QWORD [rbp - .renderPassInfo + 0x28], rcx ; .pSubpasses = &subpass
-    mov DWORD [rbp - .renderPassInfo + 0x30], 0   ; .dependencyCount
-    mov QWORD [rbp - .renderPassInfo + 0x38], 0   ; .pDependencies
+    mov DWORD [rbp - .renderPassInfo + 0x30], 1   ; .dependencyCount
+    lea rcx,  [rbp - .dependency]
+    mov QWORD [rbp - .renderPassInfo + 0x38], rcx ; .pDependencies
 
     mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
@@ -1849,6 +2059,72 @@ record_command_buffer:
     ret
 ;========================================================== END record_command_buffer ============================================================
 
+;=================== create_sync_objects - arg1: Environment* - ret: bool ======================
+create_sync_objects:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .envptr = 0x10
+
+    .semaphoreInfo =                  0x20 ; sizeof(VkSemaphoreCreateInfo) [0x18]
+    .fenceInfo     = .semaphoreInfo + 0x20 ; sizeof(VkFenceCreateInfo) [0x18]
+
+    .last_var = .fenceInfo
+
+    mov [rbp + .envptr], rcx
+
+    ; set up VkSemaphoreCreateInfo (0x20)
+    mov DWORD [rbp - .semaphoreInfo + 0x00], VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .semaphoreInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .semaphoreInfo + 0x10], 0 ; .flags
+
+    ; set up VkFenceCreateInfo (0x20)
+    mov DWORD [rbp - .fenceInfo + 0x00], VK_STRUCTURE_TYPE_FENCE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .fenceInfo + 0x08], 0 ; .pNext
+    mov DWORD [rbp - .fenceInfo + 0x10], VK_FENCE_CREATE_SIGNALED_BIT ; .flags
+
+    lea r9, [rcx + ENV_VK_IMGAVSEMAPHORE]
+    mov rcx, [rcx + ENV_VK_DEVICE]
+    lea rdx, [rbp - .semaphoreInfo]
+    mov r8, 0
+    call vkCreateSemaphore
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_sync_objects_fail
+    
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    lea rdx, [rbp - .semaphoreInfo]
+    mov r8, 0
+    lea r9, [rax + ENV_VK_RENFINSEMAPHORE]
+    call vkCreateSemaphore
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_sync_objects_fail
+
+    mov rax, [rbp + .envptr]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    lea rdx, [rbp - .fenceInfo]
+    mov r8, 0
+    lea r9, [rax + ENV_VK_INFLIGHTFENCE]
+    call vkCreateFence
+    call check_vulkan_error
+    test rax, rax
+    jz .L_create_sync_objects_fail
+
+    ; success:
+    mov rax, TRUE
+    jmp .L_create_sync_objects_end
+
+    .L_create_sync_objects_fail:
+    xor rax, rax
+
+    .L_create_sync_objects_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rbp
+    ret
+;================================== END create_sync_objects ====================================
 
 ;============== read_file - arg1: file_name - arg2: out_size_ptr - ret: data_ptr ===============
 read_file:
@@ -2503,6 +2779,7 @@ section '.data' data readable writeable
     is_fb                db "Initialized Vulkan framebuffers [0x%llX]", 0
     is_cp                db "Initialized Vulkan command pool [0x%llX]", 0
     is_cb                db "Initialized Vulkan command buffer [0x%llX]", 0
+    is_so                db "Initialized Vulkan sync objects [0x%llX] [0x%llX] [0x%llX]", 0
     is_everything        db "Successfully initialized everything", 0
 
     devprops_api         db "devprops apiVersion: 0x%X", 0
