@@ -65,6 +65,7 @@ extrn vkAcquireNextImageKHR
 extrn vkResetCommandBuffer
 extrn vkQueueSubmit
 extrn vkQueuePresentKHR
+extrn vkDeviceWaitIdle
 extrn malloc
 extrn free
 extrn memset
@@ -326,6 +327,10 @@ main_loop:
     jmp           .L_main_loop_poll_event
 
     .L_main_loop_end:
+    mov rax, [rbp + 0x10]
+    mov rcx, [rax + ENV_VK_DEVICE]
+    call vkDeviceWaitIdle
+
     mov           rax, 0 ; zero indicates success here, return nonzero on failure
     add           rsp, EVENT_SZ + SHADOW_SPACE
     pop           rbp
@@ -340,8 +345,8 @@ draw_frame:
 
     .envptr = 0x10
 
-    .imageIndex       =                     0x08 ; uint32
-    .submitInfo       = .imageIndex       + 0x48 ; sizeof(VkSubmitInfo)
+    .imageIndex       =                     0x10 ; uint32
+    .submitInfo       = .imageIndex       + 0x50 ; sizeof(VkSubmitInfo)
     .waitSemaphores   = .submitInfo       + 0x10 ; array of VkSemaphores of size 1
     .waitStages       = .waitSemaphores   + 0x10 ; array of VkPipelineStageFlags of size 1
     .signalSemaphores = .waitStages       + 0x10 ; array of VkSemaphores of size 1
@@ -1988,6 +1993,7 @@ record_command_buffer:
     lea rdx, [rbp - .renderPassInfo]
     mov r8,  VK_SUBPASS_CONTENTS_INLINE
     call vkCmdBeginRenderPass
+
     ;---------------------------
     mov rax, [rbp + .envptr]
     mov rcx, [rbp + .commandBuffer]
@@ -2000,10 +2006,9 @@ record_command_buffer:
     ; set up viewport
     mov DWORD [rbp - .viewport + 0x00], 0 ; .x
     mov DWORD [rbp - .viewport + 0x04], 0 ; .y
-    mov rcx,  [rax + ENV_VK_SWAPCHAINEXTENT]
-    cvtsi2ss xmm0, [rcx + 0x00] ; (float)swapChainExtent.width
+    cvtsi2ss xmm0, [rax + ENV_VK_SWAPCHAINEXTENT + 0x00] ; (float)swapChainExtent.width
     movss DWORD [rbp - .viewport + 0x08], xmm0 ; .width = (float)swapChainExtent.width
-    cvtsi2ss xmm0, [rcx + 0x04] ; (float)swapChainExtent.height
+    cvtsi2ss xmm0, [rax + ENV_VK_SWAPCHAINEXTENT + 0x04] ; (float)swapChainExtent.height
     movss DWORD [rbp - .viewport + 0x0C], xmm0; .height = (float)swapChainExtent.height
     mov DWORD [rbp - .viewport + 0x10], 0    ; .minDepth
     mov DWORD [rbp - .viewport + 0x14], f1_0 ; .maxDepth
@@ -2765,6 +2770,7 @@ section '.data' data readable writeable
     log_indices          db "graphicsFamily: %d presentFamily: %d", 0
     log_str              db "string: %s", 0
     log_2str             db "str1: [%s] str2: [%s]", 0
+    log_float            db "%f", 0
 
     is_sdl               db "Initialized SDL...", 0
     is_window            db "Initialized SDL window [0x%llX]...", 0
