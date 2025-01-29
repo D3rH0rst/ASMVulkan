@@ -95,6 +95,9 @@ VK_PRESENT_MODE_FIFO_KHR = 2
 
 VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000
 VK_STRUCTURE_TYPE_PRESENT_INFO_KHR = 1000001001
+VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO = 1
+VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO = 2
+VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO = 3
 VK_STRUCTURE_TYPE_SUBMIT_INFO = 4
 VK_STRUCTURE_TYPE_FENCE_CREATE_INFO = 8
 VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO = 9
@@ -116,6 +119,7 @@ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO = 39
 VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO = 40
 VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO = 42
 VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO = 43
+VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT = 1000128004
 VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x00000010
 VK_SHARING_MODE_EXCLUSIVE = 0
 VK_SHARING_MODE_CONCURRENT = 1
@@ -869,62 +873,78 @@ init_vulkan:
 create_vk_instance:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32
+    sub           rsp, .last_var + SHADOW_SPACE ; VkApplicationInfo + VkInstanceCreateInfo + uint32
 
-    mov           [rbp + 0x10], rcx ; save Environment* ptr
+    .envptr = 0x10
+
+    .appInfo    =               0x30 ; sizeof(VkApplicationInfo)
+    .createInfo = .appInfo    + 0x40 ; sizeof(VkInstanceCreateInfo)
+    .debugInfo  = .createInfo + 0x30 ; sizeof(VkDebugUtilsMessengerCreateInfoEXT)
+    .extCount   = .debugInfo  + 0x10 ; uint32
+
+    .last_var = .extCount
+
+    mov           [rbp + .envptr], rcx ; save Environment* ptr
 
     ; zeroinit applicationInfo
-    lea           rcx, [rbp - 0x30]  ; a1 = &applicationInfo
+    lea           rcx, [rbp - .appInfo]  ; a1 = &applicationInfo
     mov           edx, 0             ; a2 = 0
     mov           r8,  0x30          ; a3 = sizeof(VkApplicationInfo)
     call          memset
 
     ; set up VkApplicationInfo
     ; VK_STRUCTURE_TYPE_APPLICATION_INFO is already 0 so no need to set .sType
-    mov           DWORD [rbp - 0x30 + 0x2C], 0x403000  ; .apiVersion = VK_API_VERSION_1_3
+    mov           DWORD [rbp - .appInfo + 0x2C], 0x403000  ; .apiVersion = VK_API_VERSION_1_3
 
     ; zeroinit createInfo
-    lea           rcx, [rbp - 0x70]  ; a1 = &createInfo
+    lea           rcx, [rbp - .createInfo]  ; a1 = &createInfo
     mov           edx, 0             ; a2 = 0
-    mov           r8,  0x70          ; a3 = sizeof(VkInstanceCreateInfo)
+    mov           r8,  0x40          ; a3 = sizeof(VkInstanceCreateInfo)
     call          memset
 
     ; set up VkInstanceCreateInfo
-    mov           DWORD [rbp - 0x70 + 0x00], 0x1       ; .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
+    mov           DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO      ; .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO
 
-    lea           rax,  [rbp - 0x30]
-    mov           [rbp - 0x70 + 0x18], rax       ; .pApplicationInfo = &applicationInfo (rbp - 0x30)
+    lea           rax,  [rbp - .appInfo]
+    mov           QWORD [rbp - .createInfo + 0x18], rax       ; .pApplicationInfo = &applicationInfo (rbp - 0x30)
 
-    ; could use at some point to enable debug layers
-    ;mov DWORD [rbp - 0x70 + 0x20], 0x0       ; .enabledLayerCount = 0
-    ;mov QWORD [rbp - 0x70 + 0x28], 0x0       ; .ppEnabledLayerNames = NULL
+    cmp DWORD [debug_mode], 1
+    jne .L_create_vk_instance_no_debug
+    
+    mov DWORD [rbp - .createInfo + 0x20], validation_layers_size     ; .enabledLayerCount = validation_layers_size
+    mov rcx, validation_layers
+    mov QWORD [rbp - .createInfo + 0x28], rcx      ; .ppEnabledLayerNames = validation_layers
 
+    mov DWORD [rbp - .debugInfo + 0x00], VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT ; .sType
+
+    .L_create_vk_instance_no_debug:
     ; get the instance extensions needed
-    lea           rcx,  [rbp - 0x74]                   ; &count
+    lea           rcx,  [rbp - .extCount]                   ; &count
     call          SDL_Vulkan_GetInstanceExtensions
-    mov           ecx,  [rbp - 0x74]
-    mov           [rbp - 0x70 + 0x30], ecx       ; .enabledExtensionCount = enabled_extension_count
-    mov           [rbp - 0x70 + 0x38], rax       ; .ppEnabledExtensionNames = extension_names
+    mov           ecx,  [rbp - .extCount]
+    mov           [rbp - .createInfo + 0x30], ecx       ; .enabledExtensionCount = enabled_extension_count
+    mov           [rbp - .createInfo + 0x38], rax       ; .ppEnabledExtensionNames = extension_names
+
 
     ; call vkCreateInstance
-    lea           rcx,  [rbp - 0x70]                   ; createInfo = &createInfo
+    lea           rcx,  [rbp - .createInfo]                   ; createInfo = &createInfo
     mov           rdx, 0                               ; Allocator = NULL
-    mov           r9,   [rbp + 0x10]                   ; env* ptr
-    lea           r8,   [r9  + 0x10]                   ; instance = &instance
+    mov           r9,   [rbp + .envptr]                   ; env* ptr
+    lea           r8,   [r9  + ENV_VK_INSTANCE]                   ; instance = &instance
     call          vkCreateInstance
     call          check_vulkan_error
     test          rax, rax
     jz            .L_create_vk_instance_fail
 
     ; sucess
-    mov           rax, 1
+    mov           rax, TRUE
     jmp           .L_create_vk_instance_end
 
     .L_create_vk_instance_fail:
-    mov           rax, 0
+    xor rax, rax
 
     .L_create_vk_instance_end:
-    add           rsp, 0x30 + 0x40 + 0x10 + SHADOW_SPACE
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
 ;================================== END create_vk_instance =====================================
@@ -1040,87 +1060,102 @@ select_vk_physical_device:
 create_vk_device:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, 0x10 + 0x50 + 0x50 + 0xE0 + SHADOW_SPACE  ; indices + VkDeviceQueueCreateInfo[2] + VkDeviceCreateInfo + VkPhysicalDeviceFeatures
+    sub           rsp, .last_var + SHADOW_SPACE  ; indices + VkDeviceQueueCreateInfo[2] + VkDeviceCreateInfo + VkPhysicalDeviceFeatures
 
-    mov           [rbp + 0x10], rcx                ; save env* ptr
+    .envptr = 0x10
 
-    mov           DWORD [rbp - 0x0C], f1_0         ; v1 = 1.0f
+    .areEqual         =                   0x04 ; dword
+    .float1_0         =                   0x08 ; dword
+    .indices          =                   0x10 ; dword + dword
+    .queueInfoPF      = .indices        + 0x28 ; sizeof(VkDeviceQueueCreateInfo)
+    .queueInfoGF      = .queueInfoPF    + 0x28 ; sizeof(VkDeviceQueueCreateInfo)
+    .queueCreateInfos = .queueInfoGF           ; ptr to the queueInfos
+    .deviceFeatures   = .queueInfoGF    + 0xE0 ; sizeof(VkPhysicalDeviceFeatures)
+    .createInfo       = .deviceFeatures + 0x50 ; sizeof(VkDeviceCreateInfo)
+
+    .last_var = .createInfo
+
+    mov           [rbp + .envptr], rcx                ; save env* ptr
+
+    mov           DWORD [rbp - .float1_0], f1_0         ; v1 = 1.0f
 
     ;rcx already has env*
     mov           rdx, [rcx + ENV_VK_PHDEVICE]
-    lea           r8, [rbp - 0x08]                 ; &indices
+    lea           r8, [rbp - .indices]                 ; &indices
     call          find_queue_families
     test          rax, rax
     jz            .L_create_vk_device_fail
 
     ; check if either index is unassigned (-1)
-    mov           eax, [rbp - 0x08 + 0x00]          ; indices->graphicsFamily
-    mov           ecx, [rbp - 0x08 + 0x04]          ; indices->presentFamily
+    mov           eax, [rbp - .indices + 0x00]          ; indices->graphicsFamily
+    mov           ecx, [rbp - .indices + 0x04]          ; indices->presentFamily
     test          eax, ecx
     js            .L_create_vk_device_fail           ; js -> jump if sign bit is set (indicates -1)
     xor           eax, ecx                          ; sets ZF (zeroflag) if both indices are equal
     setz          al
     movzx         eax, al
-    mov           DWORD [rbp - 0x10], eax           ; sets [rbp - 0x10] to 1 if both indices are equal
+    mov           DWORD [rbp - .areEqual], eax           ; sets [rbp - 0x10] to 1 if both indices are equal
 
     ; memset both VkDeviceQueueCreateInfo structs to 0
-    lea           rcx, [rbp - 0x60]                 ; &VkDeviceQueueCreateInfo[0]
+    lea           rcx, [rbp - .queueCreateInfos]         ; queueCreateInfos
     mov           rdx, 0                            ; 0
     mov           r8,  0x50                         ; sizeof(VkDeviceQueueCreateInfo) * 2
     call          memset
 
     ; fill the struct (graphicsFamily)
-    mov           DWORD [rbp - 0x60 + 0x00], 0x2    ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov           eax,  [rbp - 0x08 + 0x00]         ; indices->graphicsFamily
-    mov           DWORD [rbp - 0x60 + 0x14], eax    ; .queueFamilyIndex = indices->graphicsFamily
-    mov           DWORD [rbp - 0x60 + 0x18], 1      ; .queueCount = 1
-    lea           rax,  [rbp - 0x0C]                ; &v1 (1.0f)
-    mov           QWORD [rbp - 0x60 + 0x20], rax    ; .pQueuePriorities = &v1
+    mov           DWORD [rbp - .queueInfoGF + 0x00], VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO    ; .sType
+    mov           eax,  [rbp - .indices + 0x00]         ; indices->graphicsFamily
+    mov           DWORD [rbp - .queueInfoGF + 0x14], eax    ; .queueFamilyIndex = indices->graphicsFamily
+    mov           DWORD [rbp - .queueInfoGF + 0x18], 1      ; .queueCount = 1
+    lea           rax,  [rbp - .float1_0]                ; &v1 (1.0f)
+    mov           QWORD [rbp - .queueInfoGF + 0x20], rax    ; .pQueuePriorities = &v1
 
     ; check if we need to create another struct (only if the indices differ)
-    mov           eax, [rbp - 0x10]
+    mov           eax, [rbp - .areEqual]
     test          eax, eax
     jnz           .L_create_vk_device_after_queue_create_info
 
     ; fill the struct (presentFamily)
-    mov           DWORD [rbp - 0x38 + 0x00], 0x2    ; .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
-    mov           eax,  [rbp - 0x08 + 0x04]         ; indices->presentFamily
-    mov           DWORD [rbp - 0x38 + 0x14], eax    ; .queueFamilyIndex = indices->presentFamily
-    mov           DWORD [rbp - 0x38 + 0x18], 1      ; .queueCount = 1
-    lea           rax,  [rbp - 0x0C]                ; &v1 (1.0f)
-    mov           QWORD [rbp - 0x38 + 0x20], rax    ; .pQueuePriorities = &v1
+    mov           DWORD [rbp - .queueInfoPF + 0x00], VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO    ; .sType
+    mov           eax,  [rbp - .indices + 0x04]         ; indices->presentFamily
+    mov           DWORD [rbp - .queueInfoPF + 0x14], eax    ; .queueFamilyIndex = indices->presentFamily
+    mov           DWORD [rbp - .queueInfoPF + 0x18], 1      ; .queueCount = 1
+    lea           rax,  [rbp - .float1_0]                ; &v1 (1.0f)
+    mov           QWORD [rbp - .queueInfoPF + 0x20], rax    ; .pQueuePriorities = &v1
 
     .L_create_vk_device_after_queue_create_info:
 
     ; zero out deviceFeatures
-    lea           rcx, [rbp - 0x190]; &deviceFeatures
+    lea           rcx, [rbp - .deviceFeatures]; &deviceFeatures
     mov           rdx, 0            ; 0
     mov           r8,  0xE0         ; sizeof(VkDeviceFeatures)
     call          memset
 
     ; zero out deviceCreateInfo
-    lea           rcx, [rbp - 0xB0] ; &deviceCreateInfo
+    lea           rcx, [rbp - .createInfo] ; &deviceCreateInfo
     mov           rdx, 0            ; 0
     mov           r8,  0x50         ; sizeof(VkDeviceCreateInfo)
     call          memset
 
     ; fill deviceCreateInfo struct
-    mov           DWORD [rbp - 0xB0 + 0x00], 0x3    ; .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
+    mov           DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO    ; .sType
     mov           eax,  0x1
-    add           eax,  [rbp - 0x10]                ; count = 1 + indices_equal
-    mov           DWORD [rbp - 0xB0 + 0x14], eax    ; .queueCreateInfoCount = count
-    lea           rax,  [rbp - 0x60]                ; &queueCreateInfos
-    mov           QWORD [rbp - 0xB0 + 0x18], rax    ; .pQueueCreateInfos = &queueCreateInfos
-    mov           DWORD [rbp - 0xB0 + 0x30], required_extensions_size    ; .enabledExtensionCount = required_extensions_size
-    lea           rax,  [required_extensions]       ; required_extensions
-    mov           QWORD [rbp - 0xB0 + 0x38], rax    ; .ppEnabledExtensionNames = required_extensions
-    lea           rax,  [rbp - 0x190]               ; &deviceFeatures
-    mov           QWORD [rbp - 0xB0 + 0x40], rax    ; .pEnabledFeatures = &deviceFeatures
+    mov           ecx, [rbp - .areEqual]
+    xor           ecx, 1
+    add           eax,  ecx                ; count = 1 + !indices_equal
+    mov           DWORD [rbp - .createInfo + 0x14], eax    ; .queueCreateInfoCount = count
+    lea           rax,  [rbp - .queueCreateInfos]                ; &queueCreateInfos
+    mov           QWORD [rbp - .createInfo + 0x18], rax    ; .pQueueCreateInfos = &queueCreateInfos
+    mov           DWORD [rbp - .createInfo + 0x30], required_extensions_size    ; .enabledExtensionCount = required_extensions_size
+    mov           rax,  required_extensions       ; required_extensions
+    mov           QWORD [rbp - .createInfo + 0x38], rax    ; .ppEnabledExtensionNames = required_extensions
+    lea           rax,  [rbp - .deviceFeatures]               ; &deviceFeatures
+    mov           QWORD [rbp - .createInfo + 0x40], rax    ; .pEnabledFeatures = &deviceFeatures
 
     ; call vkCreateDevice
-    mov           rax, [rbp + 0x10]                 ; load env ptr
+    mov           rax, [rbp + .envptr]                 ; load env ptr
     mov           rcx, [rax + ENV_VK_PHDEVICE]      ; arg1: VkPhysicalDevice
-    lea           rdx, [rbp - 0xB0]                 ; arg2: &deviceCreateInfo
+    lea           rdx, [rbp - .createInfo]                 ; arg2: &deviceCreateInfo
     mov           r8,  0                            ; arg3: NULL
     lea           r9,  [rax + ENV_VK_DEVICE]        ; arg4: &device
     call          vkCreateDevice
@@ -1129,17 +1164,17 @@ create_vk_device:
     jz            .L_create_vk_device_fail
 
     ; get graphicsQueue
-    mov           rax, [rbp + 0x10]                 ; load env ptr
+    mov           rax, [rbp + .envptr]                 ; load env ptr
     mov           rcx, [rax + ENV_VK_DEVICE]        ; arg1: env->device
-    mov           edx, [rbp - 0x08 + 0x00]          ; arg2: indices->graphicsFamily
+    mov           edx, [rbp - .indices + 0x00]          ; arg2: indices->graphicsFamily
     mov           r8d, 0                            ; arg3: 0
     lea           r9,  [rax + ENV_VK_GRAPHICSQUEUE] ; arg4: &env->graphicsQueue
     call          vkGetDeviceQueue
 
     ; get presentQueue
-    mov           rax, [rbp + 0x10]                 ; load env ptr
+    mov           rax, [rbp + .envptr]                 ; load env ptr
     mov           rcx, [rax + ENV_VK_DEVICE]        ; arg1: env->device
-    mov           edx, [rbp - 0x08 + 0x04]          ; arg2: indices->presentFamily
+    mov           edx, [rbp - .indices + 0x04]          ; arg2: indices->presentFamily
     mov           r8d, 0                            ; arg3: 0
     lea           r9,  [rax + ENV_VK_PRESENTQUEUE]  ; arg4: &env->presentQueue
     call          vkGetDeviceQueue
@@ -1151,7 +1186,7 @@ create_vk_device:
     .L_create_vk_device_fail:
     mov           rax, FALSE
     .L_create_vk_device_end:
-    add           rsp, 0x10 + 0x50 + 0x50 + 0xE0 + SHADOW_SPACE
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
 ;=================================== END create_vk_device ======================================
@@ -1902,7 +1937,7 @@ create_command_buffer:
     ; set up VkCommandBufferAllocateInfo (0x20)
     mov DWORD [rbp - .allocInfo + 0x00], VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO ; .sType
     mov QWORD [rbp - .allocInfo + 0x08], 0   ; .pNext
-    mov rax, [rcx + ENV_VK_COMMANDPOOL]
+    mov rax,  [rcx + ENV_VK_COMMANDPOOL]
     mov QWORD [rbp - .allocInfo + 0x10], rax ; commandPool
     mov DWORD [rbp - .allocInfo + 0x18], VK_COMMAND_BUFFER_LEVEL_PRIMARY ; .level
     mov DWORD [rbp - .allocInfo + 0x1C], 1   ; .commandBufferCount
@@ -2756,6 +2791,8 @@ check_vulkan_error:
 
 
 section '.data' data readable writeable
+    debug_mode           dd 1
+
     window_title         db "ASM SDL Window!", 0
     log_sdl_error        db "SDL Error occured: %s", 0
     log_vulkan_error     db "Vulkan Error occured: %d", 0
@@ -2806,6 +2843,11 @@ section '.data' data readable writeable
     required_extensions  dq required_ext1
     required_extensions_size = ($ - required_extensions) / 8
     required_extensions_size_aligned = ((required_extensions_size + 15) / 16) * 16
+
+    validation_layer1    db "VK_LAYER_KHRONOS_validation", 0
+    validation_layers    dq validation_layer1
+    validation_layers_size = ($ - validation_layers) / 8
+    validation_layers_size_aligned = ((validation_layers_size + 15) / 16) * 16
 
     mode_rb              db "rb", 0
 
