@@ -28,9 +28,9 @@ typedef struct {
 char create_graphics_pipeline(Env* env) {
 
     int vertShaderCodeSize;
-    void *vertShaderCode = read_file("../build/simple_vert.spv", &vertShaderCodeSize);
+    void *vertShaderCode = read_file("./build/simple_vert.spv", &vertShaderCodeSize);
     int fragShaderCodeSize;
-    void *fragShaderCode = read_file("../build/simple_frag.spv", &fragShaderCodeSize);
+    void *fragShaderCode = read_file("./build/simple_frag.spv", &fragShaderCodeSize);
 
 
 

@@ -152,6 +152,7 @@ VK_FENCE_CREATE_SIGNALED_BIT = 0x00000001
 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x00000400
 VK_SUBPASS_EXTERNAL = -1 ; defined as (~0U) which is 0xFFFFFFFF
 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x00000100
+VK_QUEUE_GRAPHICS_BIT = 0x00000001
 
 TRUE = 1
 FALSE = 0
@@ -240,31 +241,36 @@ section '.text' code readable executable
 start:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, ENV_SZ + 0x10 + SHADOW_SPACE ; ENV_SZ(0x40) -> Environment, 0x10 -> return value, 0x20 -> Shadow Space
+    sub           rsp, .last_var + SHADOW_SPACE
 
-    mov           DWORD [rbp - ENV_SZ - 0x04], 1 ; store default return value
+    .env    = ENV_SZ
+    .retval = .env + 0x10
+
+    .last_var = .retval
+
+    mov           DWORD [rbp - .retval], 1 ; store default return value
 
     ; initialize ENV to 0
-    lea rcx, [rbp - ENV_SZ]
+    lea rcx, [rbp - .env]
     mov rdx, 0
     mov r8, ENV_SZ
     call memset
 
-    lea           rcx, [rbp - ENV_SZ] ; Environment
+    lea           rcx, [rbp - .env] ; Environment
     call          init
     test          eax, eax
     jz            .L_cleanup
 
-    lea           rcx, [rbp - ENV_SZ]
+    lea           rcx, [rbp - .env]
     call          main_loop
-    mov           [rbp - ENV_SZ - 0x04], eax ; store return value
+    mov           [rbp - .retval], eax ; store return value
 
     .L_cleanup:
-    lea           rcx, [rbp - ENV_SZ]
+    lea           rcx, [rbp - .env]
     call          cleanup
 
-    mov           eax, [rbp - ENV_SZ - 0x04] ; get stored return value
-    add           rsp, ENV_SZ + 0x10 + SHADOW_SPACE
+    mov           eax, [rbp - .retval] ; get stored return value
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
 ;========================================= END main ============================================
@@ -275,8 +281,10 @@ init:
     mov           rbp, rsp
     sub           rsp, SHADOW_SPACE ; 0x20 SHADOW_SPACE
 
+    .envptr = 0x10
+
     ; move arg (Environment*) to shadow space
-    mov           [rbp + 0x10], rcx
+    mov           [rbp + .envptr], rcx
 
     ; initialize SDL
     ;mov rcx, [rbp + 0x10] its already in rcx
@@ -285,7 +293,7 @@ init:
     jz            .L_init_fail
 
     ; initialize Vulkan
-    mov           rcx, [rbp + 0x10]
+    mov           rcx, [rbp + .envptr]
     call          init_vulkan
     test          rax, rax
     jz            .L_init_fail
@@ -294,12 +302,11 @@ init:
     call          SDL_Log
 
     ; success
-    mov           rax, 1
+    mov           rax, TRUE
     jmp           .L_init_end
 
     .L_init_fail:
-    mov           rax, 0
-    jmp           .L_init_end
+    xor rax, rax
 
     .L_init_end:
     add           rsp, SHADOW_SPACE
@@ -311,32 +318,37 @@ init:
 main_loop:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, EVENT_SZ + SHADOW_SPACE
+    sub           rsp, .last_var + SHADOW_SPACE
 
-    mov           [rbp + 0x10], rcx ; mov Env* to shadow space
+    .envptr = 0x10
+    .event = EVENT_SZ
+
+    .last_var = .event
+
+    mov           [rbp + .envptr], rcx ; mov Env* to shadow space
 
     .L_main_loop_poll_event:
-    lea           rcx, [rbp - EVENT_SZ] ; first var on the stack, SDL_Event
+    lea           rcx, [rbp - .event] ; first var on the stack, SDL_Event
     call          SDL_PollEvent
-    mov           edx, [rbp - EVENT_SZ + EVENT_TYPE] ; (SDL_Event + 0x0) = event.type
+    mov           edx, [rbp - .event + EVENT_TYPE] ; (SDL_Event + 0x0) = event.type
     cmp           edx, SDL_EVENT_QUIT
     je            .L_main_loop_end
     test          rax, rax
     jnz           .L_main_loop_poll_event
 
     ;render everything here
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call draw_frame
 
     jmp           .L_main_loop_poll_event
 
     .L_main_loop_end:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     call vkDeviceWaitIdle
 
     mov           rax, 0 ; zero indicates success here, return nonzero on failure
-    add           rsp, EVENT_SZ + SHADOW_SPACE
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
 ;===================================== END main_loop ===========================================
@@ -477,10 +489,12 @@ cleanup:
     push          rsi
     sub           rsp, SHADOW_SPACE
 
-    mov           [rbp + 0x10], rcx ; mov Env* to shadow space
+    .envptr = 0x10
+
+    mov           [rbp + .envptr], rcx ; mov Env* to shadow space
 
     .L_cleanup_rf_semaphore:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_RENFINSEMAPHORE]
     mov r8,  0
@@ -491,7 +505,7 @@ cleanup:
     call vkDestroySemaphore
 
     .L_cleanup_ia_semaphore:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_IMGAVSEMAPHORE]
     mov r8,  0
@@ -502,7 +516,7 @@ cleanup:
     call vkDestroySemaphore
 
     .L_cleanup_if_fence:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_INFLIGHTFENCE]
     mov r8,  0
@@ -513,7 +527,7 @@ cleanup:
     call vkDestroyFence
 
     .L_cleanup_command_pool:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_COMMANDPOOL]
     mov r8,  0
@@ -524,14 +538,14 @@ cleanup:
     call vkDestroyCommandPool
 
     .L_cleanup_framebuffers:
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     mov rax, [rcx + ENV_VK_DEVICE]
     test rax, rax 
     jz .L_cleanup_instance
     mov rdi, [rcx + ENV_VK_FRAMEBUFFERS]
     mov rsi, 0
     .L_cleanup_framebuffers_loop_begin:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     cmp rsi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
     jge .L_cleanup_framebuffers_ptr
     mov rcx, [rax + ENV_VK_DEVICE]
@@ -542,12 +556,12 @@ cleanup:
     jmp .L_cleanup_framebuffers_loop_begin
 
     .L_cleanup_framebuffers_ptr:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_FRAMEBUFFERS]
     call free
 
     .L_cleanup_pipeline:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_GRAPHICSPIPELINE]
     mov r8, 0
@@ -558,7 +572,7 @@ cleanup:
     call vkDestroyPipeline
 
     .L_cleanup_pipeline_layout:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_PIPELINELAYOUT]
     mov r8, 0
@@ -569,7 +583,7 @@ cleanup:
     call vkDestroyPipelineLayout
 
     .L_cleanup_render_pass:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_RENDERPASS]
     mov r8,  0
@@ -580,11 +594,11 @@ cleanup:
     call vkDestroyRenderPass
 
     .L_cleanup_image_views:
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     mov rdi, [rcx + ENV_VK_SWAPCHAINIMAGEVIEWS]
     mov rsi, 0
     .L_cleanup_image_views_loop_begin:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     cmp rsi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
     jge .L_cleanup_image_views_ptr
     mov rcx, [rax + ENV_VK_DEVICE]
@@ -595,14 +609,14 @@ cleanup:
     jmp .L_cleanup_image_views_loop_begin
 
     .L_cleanup_image_views_ptr:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
     test rcx, rcx
     jz .L_cleanup_free_swap_chain_images
     call free
 
     .L_cleanup_free_swap_chain_images:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_SWAPCHAINIMAGES]
     test rcx, rcx
     jz .L_cleanup_surface
@@ -610,7 +624,7 @@ cleanup:
 
     .L_cleanup_surface:
     ; SDL_Vulkan_DestroySurface
-    mov           rax, [rbp + 0x10] ; load Env* pointer
+    mov           rax, [rbp + .envptr] ; load Env* pointer
     mov           rcx, [rax + ENV_VK_INSTANCE] ; environment.instance
     mov           rdx, [rax + ENV_SURFACE] ; environment.surface
     mov           r8,  0            ; NULL
@@ -621,7 +635,7 @@ cleanup:
     call          SDL_Vulkan_DestroySurface
 
     .L_cleanup_swapchain:
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_SWAPCHAIN]
     mov r8,  0
@@ -632,7 +646,7 @@ cleanup:
     call vkDestroySwapchainKHR
 
     .L_cleanup_device:
-    mov           rax, [rbp + 0x10] ; load Env* pointer
+    mov           rax, [rbp + .envptr] ; load Env* pointer
     mov           rcx, [rax + ENV_VK_DEVICE] ; environment.device
     mov           rdx, 0            ; NULL
     mov           r8, 0
@@ -641,7 +655,7 @@ cleanup:
     call          vkDestroyDevice
 
     .L_cleanup_instance:
-    mov           rax, [rbp + 0x10] ; load Env* pointer
+    mov           rax, [rbp + .envptr] ; load Env* pointer
     mov           rcx, [rax + ENV_VK_INSTANCE] ; environment.instance
     mov           rdx, 0
     mov           r8, 0
@@ -650,7 +664,7 @@ cleanup:
     call          vkDestroyInstance
 
     .L_cleanup_window:
-    mov           rax, [rbp + 0x10] ; load Env* pointer
+    mov           rax, [rbp + .envptr] ; load Env* pointer
     mov           rcx, [rax + ENV_WINDOW] ; environment.window
     test          rcx, rcx
     jz            .L_cleanup_SDL
@@ -658,7 +672,7 @@ cleanup:
 
     .L_cleanup_SDL:
     call          SDL_Quit
-    mov           rax, 1
+    mov           rax, TRUE
     add           rsp, SHADOW_SPACE
     pop           rsi
     pop           rdi
@@ -672,8 +686,10 @@ init_sdl:
     mov           rbp, rsp
     sub           rsp, SHADOW_SPACE
 
+    .envptr = 0x10
+
     ; move Environment* to shadow space
-    mov           [rbp + 0x10], rcx
+    mov           [rbp + .envptr], rcx
 
     ; SDL_Init
     mov           rcx, SDL_INIT_VIDEO
@@ -692,23 +708,23 @@ init_sdl:
     mov           r8, height
     mov           r9, SDL_WINDOW_VULKAN
     call          SDL_CreateWindow
-    mov           rcx, [rbp + 0x10]
-    mov           [rcx + 0x00], rax ; Environment->window = window
+    mov           rcx, [rbp + .envptr]
+    mov           [rcx + ENV_WINDOW], rax ; Environment->window = window
     call          check_sdl_error
     test          eax, eax
     jz            .L_sdl_init_fail
 
     mov           rcx, is_window
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_WINDOW]
     call          SDL_Log
 
     ; success:
-    mov           rax, 1
+    mov           rax, TRUE
     jmp           .L_sdl_init_end
 
     .L_sdl_init_fail:
-    mov           rax, 0
+    xor           rax, rax
 
     .L_sdl_init_end:
     add           rsp, SHADOW_SPACE
@@ -722,7 +738,9 @@ init_vulkan:
     mov           rbp, rsp
     sub           rsp, SHADOW_SPACE
 
-    mov           [rbp + 0x10], rcx ; move arg1 to shadow space
+    .envptr = 0x10
+
+    mov           [rbp + .envptr], rcx ; move arg1 to shadow space
 
     ; rcx already contains Env* ptr
     call          create_vk_instance
@@ -730,128 +748,128 @@ init_vulkan:
     jz            .L_init_vulkan_fail
 
     mov           rcx, is_vki
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_VK_INSTANCE]
     call          SDL_Log
 
 
-    mov           rcx, [rbp + 0x10] ; arg1 - Env*
+    mov           rcx, [rbp + .envptr] ; arg1 - Env*
     call          create_vk_surface
     test          rax, rax
     jz            .L_init_vulkan_fail
 
     mov           rcx, is_vks
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_SURFACE]
     call          SDL_Log
 
 
-    mov           rcx, [rbp + 0x10] ; arg1 - Env*
+    mov           rcx, [rbp + .envptr] ; arg1 - Env*
     call          select_vk_physical_device
     test          rax, rax
     jz            .L_init_vulkan_fail
 
     mov           rcx, is_phd
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_VK_PHDEVICE]
     call          SDL_Log
 
 
-    mov           rcx, [rbp + 0x10] ; arg1 - Env*
+    mov           rcx, [rbp + .envptr] ; arg1 - Env*
     call          create_vk_device
     test          rax, rax
     jz            .L_init_vulkan_fail
 
     mov           rcx, is_vkd
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_VK_DEVICE]
     call          SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_swap_chain
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov           rcx, is_sc
-    mov           rdx, [rbp + 0x10]
+    mov           rdx, [rbp + .envptr]
     mov           rdx, [rdx + ENV_VK_SWAPCHAIN]
     call          SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_image_views
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_iv
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_render_pass
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_rp
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_RENDERPASS]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_graphics_pipeline
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_gpl
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_GRAPHICSPIPELINE]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_framebuffers
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_fb
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_FRAMEBUFFERS]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_command_pool
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_cp
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_COMMANDPOOL]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_command_buffer
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_cb
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_COMMANDBUFFER]
     call SDL_Log
 
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     call create_sync_objects
     test rax, rax
     jz .L_init_vulkan_fail
 
     mov rcx, is_so
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_VK_IMGAVSEMAPHORE]
     mov r8,  [rax + ENV_VK_RENFINSEMAPHORE]
     mov r9,  [rax + ENV_VK_INFLIGHTFENCE]
@@ -862,7 +880,7 @@ init_vulkan:
     jmp           .L_init_vulkan_end
 
     .L_init_vulkan_fail:
-    mov           rax, 0
+    xor           rax, rax
     .L_init_vulkan_end:
     add           rsp, SHADOW_SPACE
     pop           rbp
@@ -971,7 +989,7 @@ create_vk_surface:
     jmp           .L_create_vk_surface_end
 
     .L_create_vk_surface_fail:
-    mov           rax, 0
+    xor           rax, rax
 
     .L_create_vk_surface_end:
     add           rsp, SHADOW_SPACE
@@ -985,19 +1003,25 @@ select_vk_physical_device:
     mov           rbp, rsp
     push          rsi    ; for loop, pop at the end
     push          rdi    ; need to offset by - 0x10 for stack vars
-    sub           rsp, 0x10 + SHADOW_SPACE ; uint32 count
+    sub           rsp, .last_var + SHADOW_SPACE ; uint32 count
 
-    mov           [rbp + 0x10], rcx ; save Environment* ptr
+    .envptr = 0x10
+    
+    .count = 0x10
+
+    .last_var = .count
+
+    mov           [rbp + .envptr], rcx ; save Environment* ptr
 
     mov           rcx, [rcx + ENV_VK_INSTANCE] ; arg1: VkInstance
-    lea           rdx, [rbp - 0x10 - 0x04]            ; arg2: &count
+    lea           rdx, [rbp - .count]            ; arg2: &count
     mov           r8,  0                       ; arg3: NULL
     call          vkEnumeratePhysicalDevices
     call          check_vulkan_error
     test          rax, rax
     jz            .L_select_vk_physical_device_fail_no_free
 
-    mov           ecx, [rbp - 0x10 - 0x04]            ; load count
+    mov           ecx, [rbp - .count]            ; load count
     test          ecx, ecx                    ; if count == 0 -> no GPU found
     jz            .L_select_vk_physical_device_fail_no_free
 
@@ -1007,9 +1031,9 @@ select_vk_physical_device:
     jz            .L_select_vk_physical_device_fail
     mov           rdi, rax                     ; save the malloc'd ptr in rdi
 
-    mov           rax, [rbp + 0x10]
+    mov           rax, [rbp + .envptr]
     mov           rcx, [rax + ENV_VK_INSTANCE] ; arg1: VkInstance
-    lea           rdx, [rbp - 0x10 - 0x04]            ; arg2: &count
+    lea           rdx, [rbp - .count]            ; arg2: &count
     mov           r8,  rdi                     ; arg3: malloc'd ptr
     call          vkEnumeratePhysicalDevices
     call          check_vulkan_error
@@ -1019,20 +1043,20 @@ select_vk_physical_device:
     mov           rsi, 0                       ; malloc'd ptr
     .L_select_vk_physical_device_loop_begin:
     ; count already checked for 0, no need to check at the beginning
-    mov           rcx, [rbp + 0x10]            ; arg1: Env* ptr
+    mov           rcx, [rbp + .envptr]            ; arg1: Env* ptr
     mov           rdx, [rdi + rsi * 0x8]       ; arg2: i'th device
     call          is_device_suitable
     test          rax, rax                    ; if (is_device_suitable(env, device)) break;
     jnz           .L_select_vk_physical_device_loop_end
 
     inc           rsi
-    cmp           esi, [rbp - 0x10 - 0x4]             ; if (i >= count) goto fail (looped through all and not found)
+    cmp           esi, [rbp - .count]             ; if (i >= count) goto fail (looped through all and not found)
     jge           .L_select_vk_physical_device_fail
     jmp           .L_select_vk_physical_device_loop_begin
 
     .L_select_vk_physical_device_loop_end:
     mov           rdx, [rdi + rsi * 0x8]      ; device
-    mov           rax, [rbp + 0x10]           ; env* ptr
+    mov           rax, [rbp + .envptr]           ; env* ptr
     mov           [rax + ENV_VK_PHDEVICE], rdx; env->phdevice = phdevices[i]
     mov           rcx, rdi                    ; ptr to malloc'd memory
     call          free
@@ -1046,10 +1070,10 @@ select_vk_physical_device:
     call          free
 
     .L_select_vk_physical_device_fail_no_free:
-    mov           rax, 0
+    xor           rax, rax
 
     .L_select_vk_physical_device_end:
-    add           rsp, 0x10 + SHADOW_SPACE
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rdi
     pop           rsi
     pop           rbp
@@ -1195,104 +1219,117 @@ create_vk_device:
 create_swap_chain:
     push rbp
     mov rbp, rsp
-    sub rsp, SCSD_SZ + 0x20 + 0x70 + 0x10 + SHADOW_SPACE
+    sub rsp, .last_var + SHADOW_SPACE
 
-    mov [rbp + 0x10], rcx
+    .envptr = 0x10
+
+    .swapChainSupport = SCSD_SZ
+    .extent        = .swapChainSupport + 0x10 ; QWORD
+    .imageCount    = .extent           + 0x04 ; DWORD
+    .presentMode   = .imageCount       + 0x04 ; DWORD
+    .surfaceFormat = .presentMode      + 0x08 ; QWORD
+    .createInfo    = .surfaceFormat    + 0x70 ; sizeof(VkSwapchainCreateInfoKHR) [0x68] 
+    .indices       = .createInfo       + 0x10 ; QWORD
+
+    .last_var      = .indices 
+
+    mov [rbp + .envptr], rcx
 
     ; rcx already has Env*
     mov rdx, [rcx + ENV_VK_PHDEVICE]
-    lea r8, [rbp - SCSD_SZ]
+    lea r8, [rbp - .swapChainSupport]
     call query_swap_chain_support
 
     ; choose the best SurfaceFormat
-    mov rcx, [rbp - SCSD_SZ + SCSD_FORMATS]
-    mov edx, [rbp - SCSD_SZ + SCSD_FORMATS_SIZE]
+    mov rcx, [rbp - .swapChainSupport + SCSD_FORMATS]
+    mov edx, [rbp - .swapChainSupport + SCSD_FORMATS_SIZE]
     call choose_swap_chain_format
-    mov [rbp - SCSD_SZ - 0x20], rax ; VkSurfaceFormatKHR
+    mov [rbp - .surfaceFormat], rax ; VkSurfaceFormatKHR
 
     ; choose the best PresentMode
-    mov rcx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES]
-    mov edx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES_SIZE]
+    mov rcx, [rbp - .swapChainSupport + SCSD_PRESENT_MODES]
+    mov edx, [rbp - .swapChainSupport + SCSD_PRESENT_MODES_SIZE]
     call choose_swap_present_mode
-    mov [rbp - SCSD_SZ - 0x18], eax ; VkPresentModeKHR
+    mov [rbp - .presentMode], eax ; VkPresentModeKHR
 
     ; choose the correct SwapExtent
-    mov rcx, [rbp + 0x10] ; env
-    lea rdx, [rbp - SCSD_SZ + SCSD_CAPABILITIES]
+    mov rcx, [rbp + .envptr] ; env
+    lea rdx, [rbp - .swapChainSupport + SCSD_CAPABILITIES]
     call choose_swap_extent
-    mov [rbp - SCSD_SZ - 0x10], rax ; VkExtent2D
+    mov [rbp - .extent], rax ; VkExtent2D
 
     ; free malloc'd ptr in query_swap_chain_support
-    mov rcx, [rbp - SCSD_SZ + SCSD_FORMATS]
+    mov rcx, [rbp - .swapChainSupport + SCSD_FORMATS]
     call free
-    mov rcx, [rbp - SCSD_SZ + SCSD_PRESENT_MODES]
+    mov rcx, [rbp - .swapChainSupport + SCSD_PRESENT_MODES]
     call free
 
     ; get the imageCount, preferably as minImageCount + 1
-    mov eax, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x00] ; minImageCount
+    mov eax, [rbp - .swapChainSupport + SCSD_CAPABILITIES + 0x00] ; minImageCount
     inc eax ; + 1
-    mov [rbp - SCSD_SZ - 0x14], eax           ; imageCount = minImageCount + 1
-    mov ecx, [rbp - SCSD_SZ + SCSD_CAPABILITIES + 0x04]
+    mov [rbp - .imageCount], eax           ; imageCount = minImageCount + 1
+    mov ecx, [rbp - .swapChainSupport + SCSD_CAPABILITIES + 0x04] ; maxImageCount
     test ecx, ecx ; maxImageCount == 0, skip
     jz .L_create_swap_chain_skip_image_clamp
     cmp eax, ecx 
     jle .L_create_swap_chain_skip_image_clamp ; imageCount <= maxImageCount, skip
-    mov [rbp - SCSD_SZ - 0x14], ecx          ; imageCount = maxImageCount
+    mov [rbp - .imageCount], ecx          ; imageCount = maxImageCount
     mov eax, ecx ; move it into eax so we have the endresult in eax in any scenario
     .L_create_swap_chain_skip_image_clamp:
     mov r10d, eax
-    mov rax, [rbp + 0x10] ; load env ptr
+    mov rax, [rbp + .envptr] ; load env ptr
 
     mov [rax + ENV_VK_SWAPCHAINIMAGECOUNT], r10d ; save the imageCount for the array
 
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x00], VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR ; .sType
-    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x08], 0x0 ; .pNext
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x10], 0x0 ; .flags
+    ; se up VkSwapchainCreateInfoKHR (0x70)
+    mov DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR ; .sType
+    mov QWORD [rbp - .createInfo + 0x08], 0x0 ; .pNext
+    mov DWORD [rbp - .createInfo + 0x10], 0x0 ; .flags
     mov rcx,  [rax + ENV_SURFACE]
-    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x18], rcx ; .surface
-    mov ecx,  [rbp - SCSD_SZ - 0x14]             ;  imageCount
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x20], ecx ; .minImageCount
-    mov ecx,  [rbp - SCSD_SZ - 0x20 + 0x00]      ;  surfaceFormat.format
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x24], ecx ; .imageFormat
-    mov ecx,  [rbp - SCSD_SZ - 0x20 + 0x04]      ;  surfaceFormat.colorSpace
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x28], ecx ; .imageColorSpace
-    mov rcx,  [rbp - SCSD_SZ - 0x10]             ;  extent
-    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x2C], rcx ; .imageExtent
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x34], 0x1 ; .imageArrayLayers
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x38], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ; .imageUsage
+    mov QWORD [rbp - .createInfo + 0x18], rcx ; .surface
+    mov ecx,  [rbp - .imageCount]             ;  imageCount
+    mov DWORD [rbp - .createInfo + 0x20], ecx ; .minImageCount
+    mov ecx,  [rbp - .surfaceFormat + 0x00]      ;  surfaceFormat.format
+    mov DWORD [rbp - .createInfo + 0x24], ecx ; .imageFormat
+    mov ecx,  [rbp - .surfaceFormat + 0x04]      ;  surfaceFormat.colorSpace
+    mov DWORD [rbp - .createInfo + 0x28], ecx ; .imageColorSpace
+    mov rcx,  [rbp - .extent]             ;  extent
+    mov QWORD [rbp - .createInfo + 0x2C], rcx ; .imageExtent
+    mov DWORD [rbp - .createInfo + 0x34], 0x1 ; .imageArrayLayers
+    mov DWORD [rbp - .createInfo + 0x38], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT ; .imageUsage
 
     mov rcx, rax
     mov rdx, [rax + ENV_VK_PHDEVICE]
-    lea r8,  [rbp - SCSD_SZ - 0xA0] ; &indices
+    lea r8,  [rbp - .indices] ; &indices
     call find_queue_families
 
-    mov ecx, [rbp - SCSD_SZ - 0xA0 + 0x00] ; indices->graphicsFamily
-    cmp ecx, [rbp - SCSD_SZ - 0xA0 + 0x04] ; indices->presentFamily
+    mov ecx, [rbp - .indices + 0x00] ; indices->graphicsFamily
+    cmp ecx, [rbp - .indices + 0x04] ; indices->presentFamily
     je .L_create_swap_chain_indices_equal  ; if equal, use VK_SHARING_MODE_EXCLUSIVE otherwise VK_SHARING_MODE_CONCURRENT
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x3C], VK_SHARING_MODE_CONCURRENT ; .imageSharingMode
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x40], 0x2 ; .queueFamilyIndexCount
-    lea rcx,  [rbp - SCSD_SZ - 0xA0]             ; &indices
-    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x48], rcx ; .pQueueFamilyIndices
+    mov DWORD [rbp - .createInfo + 0x3C], VK_SHARING_MODE_CONCURRENT ; .imageSharingMode
+    mov DWORD [rbp - .createInfo + 0x40], 0x2 ; .queueFamilyIndexCount
+    lea rcx,  [rbp - .indices]             ; &indices
+    mov QWORD [rbp - .createInfo + 0x48], rcx ; .pQueueFamilyIndices
     jmp .L_create_swap_chain_after_indices
 
     .L_create_swap_chain_indices_equal:
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x3C], VK_SHARING_MODE_EXCLUSIVE ; .imageSharingMode
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x40], 0x0 ; .queueFamilyIndexCount
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x48], 0x0 ; .pQueueFamilyIndices
+    mov DWORD [rbp - .createInfo + 0x3C], VK_SHARING_MODE_EXCLUSIVE ; .imageSharingMode
+    mov DWORD [rbp - .createInfo + 0x40], 0x0 ; .queueFamilyIndexCount
+    mov DWORD [rbp - .createInfo + 0x48], 0x0 ; .pQueueFamilyIndices
     
     .L_create_swap_chain_after_indices:
-    mov ecx,  [rbp - SCSD_SZ + 0x00 + 0x28]      ; swapchainSupportDetails.capabilities.currentTransform
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x50], ecx ; .preTransform
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x54], VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ; .compositeAlpha
-    mov ecx,  [rbp - SCSD_SZ - 0x18]             ;  presentMode
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x58], ecx ; .presentMode
-    mov DWORD [rbp - SCSD_SZ - 0x90 + 0x5C], TRUE; .clipped
-    mov QWORD [rbp - SCSD_SZ - 0x90 + 0x60], 0x0 ; .oldSwapchain
+    mov ecx,  [rbp - .swapChainSupport + 0x00 + 0x28]      ; swapchainSupportDetails.capabilities.currentTransform
+    mov DWORD [rbp - .createInfo + 0x50], ecx ; .preTransform
+    mov DWORD [rbp - .createInfo + 0x54], VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR ; .compositeAlpha
+    mov ecx,  [rbp - .presentMode]             ;  presentMode
+    mov DWORD [rbp - .createInfo + 0x58], ecx ; .presentMode
+    mov DWORD [rbp - .createInfo + 0x5C], TRUE; .clipped
+    mov QWORD [rbp - .createInfo + 0x60], 0x0 ; .oldSwapchain
 
     ; create the swap chain
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]    ; device
-    lea rdx, [rbp - SCSD_SZ - 0x90]   ; &createInfo
+    lea rdx, [rbp - .createInfo]   ; &createInfo
     mov r8,  0                        ; NULL
     lea r9,  [rax + ENV_VK_SWAPCHAIN] ; &swapChain
     call vkCreateSwapchainKHR
@@ -1300,35 +1337,35 @@ create_swap_chain:
     test rax, rax
     jz .L_create_swap_chain_fail
 
-    mov rax, [rbp + 0x10]
+    mov rax, [rbp + .envptr]
     mov rcx, [rax + ENV_VK_DEVICE]
     mov rdx, [rax + ENV_VK_SWAPCHAIN]
-    lea r8,  [rbp - SCSD_SZ - 0x14]
+    lea r8,  [rbp - .imageCount]
     mov r9,  0
     call vkGetSwapchainImagesKHR
     call check_vulkan_error
     test rax, rax
     jz .L_create_swap_chain_fail
     
-    mov ecx, [rbp - SCSD_SZ - 0x14]
+    mov ecx, [rbp - .imageCount]
     shl ecx, 3  ; imageCount << 3 (imageCount * sizeof(VkImage))
     call malloc
-    mov r10, [rbp + 0x10]
+    mov r10, [rbp + .envptr]
     mov [r10 + ENV_VK_SWAPCHAINIMAGES], rax ; move malloc'd ptr into env*, free later on cleanup
     test rax, rax
     jz .L_create_swap_chain_fail
 
     mov rcx, [r10 + ENV_VK_DEVICE]    ; device
     mov rdx, [r10 + ENV_VK_SWAPCHAIN] ; swapChain
-    lea r8,  [rbp - SCSD_SZ - 0x14]   ; &imageCount
+    lea r8,  [rbp - .imageCount]   ; &imageCount
     mov r9,  rax                      ; swapChainImages ptr to fill
     call vkGetSwapchainImagesKHR
 
-    mov rax, [rbp + 0x10]
-    mov ecx, [rbp - SCSD_SZ - 0x20 + 0x00] ; surfaceFormat.format
+    mov rax, [rbp + .envptr]
+    mov ecx, [rbp - .surfaceFormat + 0x00] ; surfaceFormat.format
     mov [rax + ENV_VK_SWAPCHAINIMAGEFORMAT], ecx ; save the format in env
 
-    mov rcx, [rbp - SCSD_SZ - 0x10]         ; swapChainExtent
+    mov rcx, [rbp - .extent]         ; swapChainExtent
     mov [rax + ENV_VK_SWAPCHAINEXTENT], rcx ; save the extent in env
 
     ; success:
@@ -1336,10 +1373,10 @@ create_swap_chain:
     jmp .L_create_swap_chain_end
 
     .L_create_swap_chain_fail:
-    mov rax, FALSE
+    xor rax, rax
     
     .L_create_swap_chain_end:
-    add rsp, SCSD_SZ + 0x20 + 0x70 + 0x10 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;=================================== END create_swap_chain =====================================
@@ -1350,53 +1387,59 @@ create_image_views:
     mov rbp, rsp
     push rdi
     push rsi
-    sub rsp, 0x50 + SHADOW_SPACE ; VkImageViewCreateInfo
+    sub rsp, .last_var + SHADOW_SPACE ; VkImageViewCreateInfo
 
-    mov [rbp + 0x10], rcx
+    .envptr = 0x10
+
+    .pushOffset = 0x10
+    .createInfo = .pushOffset + 0x50
+    .last_var = .createInfo - .pushOffset
+
+    mov [rbp + .envptr], rcx
 
     mov ecx, [rcx + ENV_VK_SWAPCHAINIMAGECOUNT]
     shl ecx, 3 ; multiply by 8
     call malloc
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
     mov [rcx + ENV_VK_SWAPCHAINIMAGEVIEWS], rax ; env->swapChainImageViews = malloc(env->swapChainImageCount * sizeof(VkImageView))
     test rax, rax
     jz .L_create_image_views_fail
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .envptr]
 
     mov rdi, [rcx + ENV_VK_SWAPCHAINIMAGES]
     mov rsi, 0
     
     .L_create_image_views_loop_begin:
-    mov rax, [rbp + 0x10] ; env*
+    mov rax, [rbp + .envptr] ; env*
     cmp esi, [rax + ENV_VK_SWAPCHAINIMAGECOUNT]
     jge .L_create_image_views_loop_end
     
     ; fill createinfo
-    mov DWORD [rbp - 0x10 - 0x50 + 0x00], VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x10 - 0x50 + 0x08], 0x0 ; .pNext
-    mov DWORD [rbp - 0x10 - 0x50 + 0x10], 0x0 ; .flags
+    mov DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO ; .sType
+    mov QWORD [rbp - .createInfo + 0x08], 0x0 ; .pNext
+    mov DWORD [rbp - .createInfo + 0x10], 0x0 ; .flags
     mov rcx,  [rdi + rsi * 0x8]               ;  swapChainImages[i]
-    mov QWORD [rbp - 0x10 - 0x50 + 0x18], rcx ; .image = swapChainImages[i]
-    mov DWORD [rbp - 0x10 - 0x50 + 0x20], VK_IMAGE_VIEW_TYPE_2D ; .viewType
+    mov QWORD [rbp - .createInfo + 0x18], rcx ; .image = swapChainImages[i]
+    mov DWORD [rbp - .createInfo + 0x20], VK_IMAGE_VIEW_TYPE_2D ; .viewType
     mov ecx,  [rax + ENV_VK_SWAPCHAINIMAGEFORMAT] ; env->swapChainFormat
-    mov DWORD [rbp - 0x10 - 0x50 + 0x24], ecx ; .format = env->swapChainFormat
+    mov DWORD [rbp - .createInfo + 0x24], ecx ; .format = env->swapChainFormat
 
     ; components
-    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x00], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.r 
-    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x04], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.g
-    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x08], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.b
-    mov DWORD [rbp - 0x10 - 0x50 + 0x28 + 0x0C], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.a
+    mov DWORD [rbp - .createInfo + 0x28 + 0x00], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.r 
+    mov DWORD [rbp - .createInfo + 0x28 + 0x04], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.g
+    mov DWORD [rbp - .createInfo + 0x28 + 0x08], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.b
+    mov DWORD [rbp - .createInfo + 0x28 + 0x0C], VK_COMPONENT_SWIZZLE_IDENTITY ; .components.a
 
     ; subresourceRange
-    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x00], VK_IMAGE_ASPECT_COLOR_BIT     ; .subresourceRange.aspectMask
-    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x04], 0x0                           ; .subresourceRange.baseMipLevel
-    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x08], 0x1                           ; .subresourceRange.levelCount
-    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x0C], 0x0                           ; .subresourceRange.baseArrayLayer
-    mov DWORD [rbp - 0x10 - 0x50 + 0x38 + 0x10], 0x1                           ; .subresourceRange.layerCount
+    mov DWORD [rbp - .createInfo + 0x38 + 0x00], VK_IMAGE_ASPECT_COLOR_BIT     ; .subresourceRange.aspectMask
+    mov DWORD [rbp - .createInfo + 0x38 + 0x04], 0x0                           ; .subresourceRange.baseMipLevel
+    mov DWORD [rbp - .createInfo + 0x38 + 0x08], 0x1                           ; .subresourceRange.levelCount
+    mov DWORD [rbp - .createInfo + 0x38 + 0x0C], 0x0                           ; .subresourceRange.baseArrayLayer
+    mov DWORD [rbp - .createInfo + 0x38 + 0x10], 0x1                           ; .subresourceRange.layerCount
 
     mov rcx, [rax + ENV_VK_DEVICE] ; env->device
-    lea rdx, [rbp - 0x10 - 0x50]   ; &createInfo
+    lea rdx, [rbp - .createInfo]   ; &createInfo
     mov r8,  0x0                   ; NULL
     mov r10,  [rax + ENV_VK_SWAPCHAINIMAGEVIEWS]
     lea r9, [r10 + rsi * 0x8]      ; &swapChainImageViews[i]
@@ -1418,7 +1461,7 @@ create_image_views:
     mov rax, FALSE
     
     .L_create_image_views_end:
-    add rsp, 0x50 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rsi
     pop rdi
     pop rbp
@@ -1799,9 +1842,12 @@ create_framebuffers:
     sub rsp, .last_var + SHADOW_SPACE
 
     .envptr = 0x10
-    .framebufferInfo = 0x10 + 0x40 ; (rsi + rdi) + sizeof(VkFramebufferCreateInfo)
+
+    .pushOffset      =                    0x10
+    .framebufferInfo = .pushOffset      + 0x40 ; (rsi + rdi) + sizeof(VkFramebufferCreateInfo)
     .attachments     = .framebufferInfo + 0x10
-    .last_var = .attachments
+    
+    .last_var = .attachments - .pushOffset
 
     mov [rbp + .envptr], rcx
 
@@ -1877,7 +1923,7 @@ create_command_pool:
 
     .envptr = 0x10
 
-    .queueFamilyIndices = 0x10 ; (uint32 + uint32) aligned to 0x10
+    .queueFamilyIndices =             0x10 ; (uint32 + uint32) aligned to 0x10
     .poolInfo = .queueFamilyIndices + 0x20 ; sizeof(VkCommandPoolCreateInfo) [0x18]
 
     .last_var = .poolInfo
@@ -2170,14 +2216,16 @@ create_sync_objects:
 read_file:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x20 + SHADOW_SPACE
+    sub rsp, .last_var + SHADOW_SPACE
 
-    .fileName = 0x10
+    .fileName     = 0x10
     .out_size_ptr = 0x18 
 
-    .fileSize = 0x04
-    .fileptr = 0x10
-    .dataptr = 0x18
+    .fileSize =             0x08 ; DWORD (aligned to 0x08)
+    .fileptr  = .fileSize + 0x08 ; QWORD
+    .dataptr  = .fileptr  + 0x10 ; QWORD (aligned to 0x10)
+
+    .last_var = .dataptr
 
 
     mov [rbp + .fileName], rcx
@@ -2228,7 +2276,7 @@ read_file:
     mov rax, [rbp - .dataptr]
 
     .end:
-    add rsp, 0x20 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;====================================== END read_file ==========================================
@@ -2237,39 +2285,47 @@ read_file:
 is_device_suitable:
     push          rbp
     mov           rbp, rsp
-    sub           rsp, 0x10 + SCSD_SZ + SHADOW_SPACE ; indices, SwapChainSupportDetails
+    sub           rsp, .last_var + SHADOW_SPACE ; indices, SwapChainSupportDetails
 
-    mov           [rbp + 0x10], rcx                 ; save arg1
-    mov           [rbp + 0x18], rdx                 ; save arg2
+    .envptr = 0x10
+    .phdevice = 0x18
+
+    .indices          =               0x10
+    .swapChainSupport = .indices + SCSD_SZ
+
+    .last_var = .swapChainSupport
+
+    mov           [rbp + .envptr], rcx                 ; save arg1
+    mov           [rbp + .phdevice], rdx                 ; save arg2
 
     ; rcx already has env*
     ; rdx already has VkDevice
-    lea           r8, [rbp - 0x08]                  ; &indices
+    lea           r8, [rbp - .indices]                  ; &indices
     call          find_queue_families
     test          rax, rax
     jz            .L_is_device_suitable_false
 
     ; check if either index is unassigned (-1)
-    mov           eax, [rbp - 0x08 + 0x00]          ; graphicsFamily
-    or            eax, [rbp - 0x08 + 0x04]          ; eax = graphicsFamily | presentFamily
+    mov           eax, [rbp - .indices + 0x00]          ; graphicsFamily
+    or            eax, [rbp - .indices + 0x04]          ; eax = graphicsFamily | presentFamily
     js            .L_is_device_suitable_false        ; js -> jump if sign bit is set (indicates -1)
 
-    mov           rcx, [rbp + 0x18]                 ; load VkDevice
+    mov           rcx, [rbp + .phdevice]                 ; load VkDevice
     call          check_device_extension_support
     test          rax, rax
     jz            .L_is_device_suitable_false
 
-    mov rcx, [rbp + 0x10]
-    mov rdx, [rbp + 0x18]
-    lea r8, [rbp - 0x10 - SCSD_SZ]
+    mov rcx, [rbp + .envptr]
+    mov rdx, [rbp + .phdevice]
+    lea r8, [rbp - .swapChainSupport]
     call query_swap_chain_support
 
-    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_FORMATS]
+    mov rcx, [rbp - .swapChainSupport + SCSD_FORMATS]
     test rcx, rcx
     jz .L_is_device_suitable_false_skip_format_free
     call free ; free malloc'd ptr
 
-    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_PRESENT_MODES]
+    mov rcx, [rbp - .swapChainSupport + SCSD_PRESENT_MODES]
     test rcx, rcx
     jz .L_is_device_suitable_false
     call free ; free malloc'd ptr
@@ -2280,15 +2336,15 @@ is_device_suitable:
 
 
     .L_is_device_suitable_false_skip_format_free:
-    mov rcx, [rbp - 0x10 - SCSD_SZ + SCSD_PRESENT_MODES]
+    mov rcx, [rbp - .swapChainSupport + SCSD_PRESENT_MODES]
     test rcx, rcx
     jz .L_is_device_suitable_false
     call free
     .L_is_device_suitable_false:
-    mov           rax, FALSE
+    xor           rax, rax ; rax = FALSE
     
     .L_is_device_suitable_end:
-    add           rsp, 0x10 + SCSD_SZ + SHADOW_SPACE
+    add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
 ;================================== END is_device_suitable =====================================
@@ -2297,25 +2353,31 @@ is_device_suitable:
 create_shader_module:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x30 + SHADOW_SPACE ; VkShaderModuleCreateInfo 
+    sub rsp, .last_var + SHADOW_SPACE ; VkShaderModuleCreateInfo 
 
-    mov DWORD [rbp - 0x30 + 0x00], VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO ; .sType
-    mov QWORD [rbp - 0x30 + 0x08], 0   ; .pNext
-    mov DWORD [rbp - 0x30 + 0x10], 0   ; .flags
-    mov QWORD [rbp - 0x30 + 0x18], r8  ; .codeSize
-    mov QWORD [rbp - 0x30 + 0x20], rdx ; .pCode
+    .shaderModule =                 0x08 ; QWORD
+    .createInfo   = .shaderModule + 0x28 ; sizeof(VkShaderModuleCreateInfo)
+
+    .last_var = .createInfo
+
+    mov DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO ; .sType
+    mov QWORD [rbp - .createInfo + 0x08], 0   ; .pNext
+    mov DWORD [rbp - .createInfo + 0x10], 0   ; .flags
+    mov QWORD [rbp - .createInfo + 0x18], r8  ; .codeSize
+    mov QWORD [rbp - .createInfo + 0x20], rdx ; .pCode
 
     mov rcx, [rcx + ENV_VK_DEVICE] ; env->device
-    lea rdx, [rbp - 0x30]          ; &createInfo
+    lea rdx, [rbp - .createInfo]          ; &createInfo
     mov r8,  0                     ; NULL
-    lea r9, [rbp - 0x08]           ; &shaderModule
+    lea r9, [rbp - .shaderModule]           ; &shaderModule
     call vkCreateShaderModule
     call check_vulkan_error
     test rax, rax
     jz .L_create_shader_module_end
-    mov rax, [rbp - 0x08] ; shaderModule
+    mov rax, [rbp - .shaderModule] ; shaderModule
+
     .L_create_shader_module_end:
-    add rsp, 0x30 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;================================================ END create_shader_module ==================================================
@@ -2325,23 +2387,35 @@ find_queue_families:
     push          rbp
     mov           rbp, rsp
     push          rsi   ; loop vars, popped at the end of the function
-    push          r12   ; due to this, - 0x20 is needed for stack acces
+    push          r12   ; due to this, - 0x20 is needed for stack access
     push          rdi
-    sub           rsp, 0x08 + 0x10 + SHADOW_SPACE ; 0x8 alignment
+    sub           rsp, .last_var + SHADOW_SPACE ; 0x8 alignment
 
-    mov           [rbp + 0x10], rcx        ; save env* ptr
-    mov           [rbp + 0x18], rdx        ; save VkPhysicalDevice
-    mov           [rbp + 0x20], r8         ; save QueueFamilyIndices* ptr
+    .envptr   = 0x10
+    .phdevice = 0x18
+    .indices  = 0x20
+    
+    .pushOffset = 0x20
+
+    .presentSupport   = .pushOffset     + 0x0C ; DWORD, aligned to 8
+    .queueFamilyCount = .presentSupport + 0x04 ; DWORD
+
+    .last_var = .queueFamilyCount - .pushOffset
+
+
+    mov           [rbp + .envptr], rcx        ; save env* ptr
+    mov           [rbp + .phdevice], rdx        ; save VkPhysicalDevice
+    mov           [rbp + .indices], r8         ; save QueueFamilyIndices* ptr
 
     mov           QWORD [r8], -1           ; set both QueueFamilyIndices to -1
-    mov           DWORD [rbp - 0x20 - 0x08], FALSE; presentSupport = 0
+    mov           DWORD [rbp - .presentSupport], FALSE; presentSupport = 0
 
     ; call vkGetPhysicalDeviceQueueFamilyProperties to get the count
     mov           rcx, rdx                 ; arg1: VkPhysicalDevice
-    lea           rdx, [rbp - 0x20 - 0x04] ; arg2: &queueFamilyCount
+    lea           rdx, [rbp - .queueFamilyCount] ; arg2: &queueFamilyCount
     mov           r8,  0                   ; arg3: NULL
     call          vkGetPhysicalDeviceQueueFamilyProperties
-    mov           eax, [rbp - 0x20 - 0x04]
+    mov           eax, [rbp - .queueFamilyCount]
     test          eax, eax                ; if queueFamilyCount == 0 -> fail
     jz            .L_find_queue_families_fail_no_free
 
@@ -2353,32 +2427,32 @@ find_queue_families:
     mov           rdi, rax                 ; rdi has the base ptr to VkQueueFamilyProperties
 
     ; call vkGetPhysicalDeviceQueueFamilyProperties to fill the ptr
-    mov           rcx, [rbp + 0x18]        ; arg1: VkPhysicalDevice
-    lea           rdx, [rbp - 0x20 - 0x04] ; arg2: &queueFamilyCount
+    mov           rcx, [rbp + .phdevice]        ; arg1: VkPhysicalDevice
+    lea           rdx, [rbp - .queueFamilyCount] ; arg2: &queueFamilyCount
     mov           r8,  rdi                 ; arg3: mallocd ptr
     call          vkGetPhysicalDeviceQueueFamilyProperties
 
     mov           rsi, 0                   ; rsi <- loop counter (i)
-    mov           r12, [rbp + 0x20]        ; load indices* into r12
+    mov           r12, [rbp + .indices]        ; load indices* into r12
 
     .L_find_queue_families_loop_begin:
     mov           rax, rsi
     imul          rax, 0x18               ; i * sizeof(VkQueueFamilyProperties) (mul implicitly uses rax as the source operand -> mul rax, 0x18)
     add           rax, rdi                 ; rax = baseptr + i * sizeof(VkQueueFamilyProperties)
 
-    test          DWORD [rax + 0x00], 0x1 ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
+    test          DWORD [rax + 0x00], VK_QUEUE_GRAPHICS_BIT ; .queueFlags & VK_QUEUE_GRAPHICS_BIT
     jz            .L_find_queue_families_skip_graphics_family
     mov           DWORD [r12 + 0x00], esi  ; indices->graphicsFamily = i
 
     .L_find_queue_families_skip_graphics_family:
-    mov           rcx, [rbp + 0x18]        ; arg1: VkPhsyicalDevice
+    mov           rcx, [rbp + .phdevice]        ; arg1: VkPhsyicalDevice
     mov           edx, esi                 ; arg2: i
-    mov           r9,  [rbp + 0x10]
+    mov           r9,  [rbp + .envptr]
     mov           r8,  [r9  + ENV_SURFACE] ; arg3: env->VkSurface
-    lea           r9,  [rbp - 0x20 - 0x08] ; arg4: &presentSupport
+    lea           r9,  [rbp - .presentSupport] ; arg4: &presentSupport
     call          vkGetPhysicalDeviceSurfaceSupportKHR
 
-    mov           eax, [rbp - 0x20 - 0x08]
+    mov           eax, [rbp - .presentSupport]
     test          eax, eax                ; if (!presentSupport) skip to complete check
     jz            .L_find_queue_families_skip_present_family
     mov           DWORD [r12 + 0x04], esi  ; indices->presentFamily = i
@@ -2389,7 +2463,7 @@ find_queue_families:
     jns           .L_find_queue_families_loop_end ; jmp not sign bit -> jump if the sign bit on either index is not set
 
     inc           rsi
-    cmp           rsi, [rbp - 0x20 - 0x04]
+    cmp           rsi, [rbp - .queueFamilyCount]
     jl            .L_find_queue_families_loop_begin
 
     .L_find_queue_families_loop_end:
@@ -2407,7 +2481,7 @@ find_queue_families:
     mov           rax, FALSE
 
     .L_find_queue_families_end:
-    add           rsp, 0x08 + 0x10 + SHADOW_SPACE; <- alignment
+    add           rsp, .last_var + SHADOW_SPACE; <- alignment
     pop           rdi
     pop           r12
     pop           rsi
@@ -2419,77 +2493,86 @@ find_queue_families:
 query_swap_chain_support:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE
+    sub rsp, .last_var + SHADOW_SPACE
 
-    mov [rbp + 0x10], rcx
-    mov [rbp + 0x18], rdx
-    mov [rbp + 0x20], r8 
+    .envptr = 0x10
+    .phdevice  = 0x18
+    .details = 0x20
 
-    mov rcx, rdx          ; VkPhysicalDevice
-    mov rax, [rbp + 0x10]
-    mov rdx, [rax + ENV_SURFACE] ; surface
+    .formatCount      =                0x08 ; DWORD (aligned)
+    .presentModeCount = .formatCount + 0x08 ; DWORD (aligned)
+
+    .last_var = .presentModeCount
+
+    mov [rbp + .envptr], rcx
+    mov [rbp + .phdevice], rdx
+    mov [rbp + .details], r8 
+
+    mov r10, rdx
+    mov rdx, [rcx + ENV_SURFACE] ; surface
+    mov rcx, r10         ; VkPhysicalDevice
     ; r8 already contains pointer to details->capabilities
     call vkGetPhysicalDeviceSurfaceCapabilitiesKHR
     call check_vulkan_error
     test rax, rax
     jz .L_query_swap_chain_support_fail_no_free_formats
 
-    mov rcx, [rbp + 0x18] ; VkPhysicalDevice
-    mov rax, [rbp + 0x10]
+    mov rcx, [rbp + .phdevice] ; VkPhysicalDevice
+    mov rax, [rbp + .envptr]
     mov rdx, [rax + ENV_SURFACE] ; surface
-    lea r8,  [rbp - 0x04] ; &formatCount
+    lea r8,  [rbp - .formatCount] ; &formatCount
     mov r9,  0            ; NULL
     call vkGetPhysicalDeviceSurfaceFormatsKHR
     call check_vulkan_error
     test rax, rax
     jz .L_query_swap_chain_support_fail_no_free_formats
-    cmp DWORD [rbp - 0x04], 0 ; if (formatCount == 0)
+    cmp DWORD [rbp - .formatCount], 0 ; if (formatCount == 0)
     je .L_query_swap_chain_support_skip_formats
 
-    mov ecx, [rbp - 0x04] ; formatCount
+    mov ecx, [rbp - .formatCount] ; formatCount
     shl rcx, 3                  ; formatCount << 3 (*8 which is sizeof(VkSurfaceFormatKHR))
     call malloc
-    mov rcx, [rbp + 0x20]       ; SwapChainSupportDetails*
+    mov rcx, [rbp + .details]       ; SwapChainSupportDetails*
     mov [rcx + SCSD_FORMATS], rax       ; SwapChainSupportDetails->formats = malloc(...)
-    mov edx, [rbp - 0x04]       ; formatCount
+    mov edx, [rbp - .formatCount]       ; formatCount
     mov [rcx + SCSD_FORMATS_SIZE], edx       ; SwapChainSupportDetails->formatCount = formatCount
     test rax, rax
     jz .L_query_swap_chain_support_fail_no_free_formats
     
-    mov rcx, [rbp + 0x18]       ; arg1: VkPhysicalDevice
-    mov r8,  [rbp + 0x10]
+    mov rcx, [rbp + .phdevice]       ; arg1: VkPhysicalDevice
+    mov r8,  [rbp + .envptr]
     mov rdx, [r8 + ENV_SURFACE] ; surface
-    lea r8,  [rbp - 0x04]       ; &formatCount
+    lea r8,  [rbp - .formatCount]       ; &formatCount
     mov r9, rax                 ; arg4: mallocd' ptr
     call vkGetPhysicalDeviceSurfaceFormatsKHR
 
     .L_query_swap_chain_support_skip_formats:
-    mov rcx, [rbp + 0x18] ; VkPhysicalDevice
-    mov rax, [rbp + 0x10] ; Env*
+    mov rcx, [rbp + .phdevice] ; VkPhysicalDevice
+    mov rax, [rbp + .envptr] ; Env*
     mov rdx, [rax + ENV_SURFACE] ; Env->surface
-    lea r8,  [rbp - 0x08] ; &presentModeCount
+    lea r8,  [rbp - .presentModeCount] ; &presentModeCount
     mov r9,  0            ; NULL
     call vkGetPhysicalDeviceSurfacePresentModesKHR
     call check_vulkan_error
     test rax, rax
     jz .L_query_swap_chain_support_fail
-    cmp DWORD [rbp - 0x08], 0 ; if (presentModeCount == 0)
+    cmp DWORD [rbp - .presentModeCount], 0 ; if (presentModeCount == 0)
     je .L_query_swap_chain_support_success
 
-    mov ecx, [rbp - 0x08] ; presentModeCount
+    mov ecx, [rbp - .presentModeCount] ; presentModeCount
     shl rcx, 2            ; formatCount << 2 (*4 which is sizeof(VkPresentModeKHR))
     call malloc
-    mov rcx, [rbp + 0x20]       ; SwapChainSupportDetails*
+    mov rcx, [rbp + .details]       ; SwapChainSupportDetails*
     mov [rcx + SCSD_PRESENT_MODES], rax       ; SwapChainSupportDetails->presentModes = malloc(...)
-    mov edx, [rbp - 0x08]       ; presentModeCount
+    mov edx, [rbp - .presentModeCount]       ; presentModeCount
     mov [rcx + SCSD_PRESENT_MODES_SIZE], edx       ; SwapChainSupportDetails->presentModeCount = presentModeCount
     test rax, rax               ; malloc returned nullptr
     jz .L_query_swap_chain_support_fail
 
-    mov rcx, [rbp + 0x18]       ; arg1: VkPhysicalDevice
-    mov r8,  [rbp + 0x10]
+    mov rcx, [rbp + .phdevice]       ; arg1: VkPhysicalDevice
+    mov r8,  [rbp + .envptr]
     mov rdx, [r8 + ENV_SURFACE] ; surface
-    lea r8,  [rbp - 0x08]       ; &presentModeCount
+    lea r8,  [rbp - .presentModeCount]       ; &presentModeCount
     mov r9, rax                 ; arg4: mallocd' ptr
     call vkGetPhysicalDeviceSurfacePresentModesKHR
 
@@ -2498,13 +2581,13 @@ query_swap_chain_support:
     jmp .L_query_swap_chain_support_end
 
     .L_query_swap_chain_support_fail:
-    mov rdx, [rbp + 0x20]
-    mov rcx, [rdx + 0x38]       ; mallocd formats ptr
+    mov rdx, [rbp + .details]
+    mov rcx, [rdx + SCSD_FORMATS]       ; mallocd formats ptr
     call free
     .L_query_swap_chain_support_fail_no_free_formats:
     mov rax, FALSE
     .L_query_swap_chain_support_end:
-    add rsp, 0x10 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;================================================== END query_swap_chain_support =====================================================
@@ -2518,39 +2601,45 @@ check_device_extension_support:
     push r12
     push r13
     sub rsp, 0x10 + required_extensions_size_aligned + SHADOW_SPACE ; uint64 + uint32
-    ; - 0x20 is for all the pushed registers
-    ; [rbp - 0x20 - 0x04] -> uint32 extensionCount
-    ; [rbp - 0x20 - 0x08] -> uint32 checkCount
-    ; [rbp - 0x20 - 0x10] -> malloc'd ptr
-    ; [rbp - 0x20 - 0x10 - required_extensions_size_aligned] -> checkedArray
 
-    mov [rbp + 0x10], rcx ; save VkPhysicalDevice
+    .phdevice = 0x10
+
+    .pushOffset = 0x20
+
+    .extensionCount = .pushOffset     + 0x0C ; DWORD aligned to 0x08
+    .checkCount     = .extensionCount + 0x04 ; DWORD
+    .checkedArray = .checkCount + required_extensions_size_aligned
+
+    .last_var = .checkedArray - .pushOffset
+
+
+    mov [rbp + .phdevice], rcx ; save VkPhysicalDevice
     
-    mov DWORD [rbp - 0x20 - 0x08], required_extensions_size ; keep track of how many we still need to check
-    cmp DWORD [rbp - 0x20 - 0x08], 0
+    mov DWORD [rbp - .checkCount], required_extensions_size ; keep track of how many we still need to check
+    cmp DWORD [rbp - .checkCount], 0
     je .L_check_device_extension_support_true               ; if 0 extensions required, its true
 
     ; rcx already contains VkPhysicalDevice
     mov rdx, 0                   ; NULL
-    lea r8, [rbp - 0x20 - 0x04]  ; &extensionCount
+    lea r8, [rbp - .extensionCount]  ; &extensionCount
     mov r9, 0                    ; NULL
     call vkEnumerateDeviceExtensionProperties
     
-    lea rcx, [rbp - 0x20 - 0x10 - required_extensions_size_aligned]
+    lea rcx, [rbp - .checkedArray]
     mov rdx, 0
     mov r8, required_extensions_size_aligned
     call memset                 ; set checked array to 0
 
     mov ecx, 0x104
-    imul ecx, [rbp - 0x20 - 0x04]
+    imul ecx, [rbp -.extensionCount]
     call malloc
     test rax, rax
     jz .L_check_device_extension_support_false_no_free
-    mov rdi, rax
+    mov rdi, rax ; save mallocd ptr in rdi
 
-    mov rcx, [rbp + 0x10]
+    mov rcx, [rbp + .phdevice]
     mov rdx, 0
-    lea r8, [rbp - 0x20 - 0x04]
+    lea r8, [rbp - .extensionCount]
     mov r9, rax                 ; malloc'd ptr
     call vkEnumerateDeviceExtensionProperties
     
@@ -2558,14 +2647,14 @@ check_device_extension_support:
     mov rsi, 0 ; i = 0
 
     .L_check_device_extension_support_outer_loop_begin:
-    cmp esi, [rbp - 0x20 - 0x04]               ; if the outer loop ends, return false, not all found
+    cmp esi, [rbp - .extensionCount]               ; if the outer loop ends, return false, not all found
     jge .L_check_device_extension_support_false
     mov r13, 0 ; j = 0
     
     .L_check_device_extension_support_inner_loop_begin:
     cmp r13, required_extensions_size
     jge .L_check_device_extension_support_inner_loop_end
-    cmp BYTE [rbp - 0x20 - 0x10 - required_extensions_size_aligned + r13], 1
+    cmp BYTE [rbp - .checkedArray + r13], 1
     je .L_check_device_extension_support_inner_loop_skip
     mov rcx, rsi
     imul rcx, 0x104
@@ -2576,9 +2665,9 @@ check_device_extension_support:
     call strcmp
     test rax, rax
     jnz .L_check_device_extension_support_inner_loop_skip
-    dec DWORD [rbp - 0x20 - 0x08]
+    dec DWORD [rbp - .checkCount]
     jz .L_check_device_extension_support_true
-    mov BYTE [rbp - 0x20 - 0x10 - required_extensions_size_aligned + r13], 1
+    mov BYTE [rbp - .checkedArray + r13], 1
 
     .L_check_device_extension_support_inner_loop_skip:
     inc r13
@@ -2602,7 +2691,7 @@ check_device_extension_support:
     mov rax, FALSE
 
     .L_check_device_extension_support_end:
-    add rsp, 0x10 + required_extensions_size_aligned + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop r13
     pop r12
     pop rsi
@@ -2663,53 +2752,63 @@ choose_swap_present_mode:
 choose_swap_extent:
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10 + SHADOW_SPACE
+    sub rsp, .last_var + SHADOW_SPACE
 
-    mov [rbp + 0x10], rcx
-    mov [rbp + 0x18], rdx
+    .envptr       = 0x10
+    .capabilities = 0x18
+
+    .height =           0x0C ; DWORD aligned to 0x08
+    .width  = .height + 0x04 ; DWORD
+
+    .actualExtent = .width
+
+    .last_var = .actualExtent
+
+    mov [rbp + .envptr], rcx
+    mov [rbp + .capabilities], rdx
 
     cmp DWORD [rdx + 0x08 + 0x00], 0xFFFFFFFF ; .currentExtent.width == uint32_max
     je .L_choose_swap_extent_get_extent
     mov rax, [rdx + 0x08] ; .currentExtent just return the current extent if one is already chosen
     jmp .L_choose_swap_extent_end
     .L_choose_swap_extent_get_extent:
-    mov rcx, [rcx + 0x00] ; window
-    lea rdx, [rbp - 0x08] ; &width
-    lea r8,  [rbp - 0x04] ; &height
+    mov rcx, [rcx + ENV_WINDOW] ; window
+    lea rdx, [rbp - .width] ; &width
+    lea r8,  [rbp - .height] ; &height
     call SDL_GetWindowSizeInPixels
     
-    mov rax, [rbp + 0x18] ; get capabilities
+    mov rax, [rbp + .capabilities] ; get capabilities
     
     ; clamp width
     mov ecx, [rax + 0x10 + 0x00] ; minImageExtent.width
-    cmp [rbp - 0x08], ecx
+    cmp [rbp - .width], ecx
     jge .L_choose_swap_extent_clamp_width_max
-    mov [rbp - 0x08], ecx  ; if (width < minImageExtent.width) width = minImageExtent.width
+    mov [rbp - .width], ecx  ; if (width < minImageExtent.width) width = minImageExtent.width
     
     .L_choose_swap_extent_clamp_width_max:
     mov ecx, [rax + 0x18 + 0x00] ; maxImageExtent.width
-    cmp [rbp - 0x08], ecx
+    cmp [rbp - .width], ecx
     jle .L_choose_swap_extent_clamp_height_min
-    mov [rbp - 0x08], ecx  ; if (width > maxImageExtent.width) width = maxImageExtent.width
+    mov [rbp - .width], ecx  ; if (width > maxImageExtent.width) width = maxImageExtent.width
 
     ; clamp height
     .L_choose_swap_extent_clamp_height_min:
     mov ecx, [rax + 0x10 + 0x04] ; minImageExtent.height
-    cmp [rbp - 0x04], ecx
+    cmp [rbp - .height], ecx
     jge .L_choose_swap_extent_clamp_height_max
-    mov [rbp - 0x04], ecx  ; if (height < minImageExtent.height) height = minImageExtent.height
+    mov [rbp - .height], ecx  ; if (height < minImageExtent.height) height = minImageExtent.height
 
     .L_choose_swap_extent_clamp_height_max:
     mov ecx, [rax + 0x18 + 0x04] ; maxImageExtent.height
-    cmp [rbp - 0x04], ecx
+    cmp [rbp - .height], ecx
     jle .L_choose_swap_extent_skip_clamp
-    mov [rbp - 0x04], ecx  ; if (height > maxImageExtent.height) height = maxImageExtent.height
+    mov [rbp - .height], ecx  ; if (height > maxImageExtent.height) height = maxImageExtent.height
 
     .L_choose_swap_extent_skip_clamp:
-    mov rax, [rbp - 0x08] ; get qword of width (width + height) into rax
+    mov rax, [rbp - .actualExtent] ; get qword of width (width + height) into rax
 
     .L_choose_swap_extent_end:
-    add rsp, 0x10 + SHADOW_SPACE
+    add rsp, .last_var + SHADOW_SPACE
     pop rbp
     ret
 ;================================================== END choose_swap_extent ======================================================
@@ -2791,7 +2890,7 @@ check_vulkan_error:
 
 
 section '.data' data readable writeable
-    debug_mode           dd 1
+    debug_mode           dd 0
 
     window_title         db "ASM SDL Window!", 0
     log_sdl_error        db "SDL Error occured: %s", 0
@@ -2800,6 +2899,7 @@ section '.data' data readable writeable
     vk_engine_name       db "No Engine", 0
     no_suitable_dev      db "No suitable physical device found", 0
     print_sep            db "-------------------------------", 0
+    log_uint             db "%u", 0
     log_int              db "%d", 0
     log_ptr              db "0x%llX", 0
     log_ext_name         db "Device Extension: %s", 0
