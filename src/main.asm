@@ -66,9 +66,11 @@ extrn vkResetCommandBuffer
 extrn vkQueueSubmit
 extrn vkQueuePresentKHR
 extrn vkDeviceWaitIdle
+extrn vkGetInstanceProcAddr
 extrn malloc
 extrn free
 extrn memset
+extrn memcpy
 extrn strcmp
 extrn fopen
 extrn fseek
@@ -154,6 +156,8 @@ VK_SUBPASS_EXTERNAL = -1 ; defined as (~0U) which is 0xFFFFFFFF
 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x00000100
 VK_QUEUE_GRAPHICS_BIT = 0x00000001
 
+VK_ERROR_EXTENSION_NOT_PRESENT = -7
+
 TRUE = 1
 FALSE = 0
 
@@ -180,7 +184,7 @@ f1_0 = 0x3f800000
 ;    .vk_pipelineLayout    dq 0
 ;    .vk_graphicsPipeline  dq 0
 ;}
-ENV_SZ                      = 0x110
+ENV_SZ                      = 0x120
 ; members
 ENV_WINDOW                  = 0x000
 ENV_SURFACE                 = 0x008
@@ -204,6 +208,7 @@ ENV_VK_COMMANDBUFFER        = 0x090
 ENV_VK_IMGAVSEMAPHORE       = 0x098
 ENV_VK_RENFINSEMAPHORE      = 0x100
 ENV_VK_INFLIGHTFENCE        = 0x108
+ENV_VK_DEBUGMESSENGER       = 0x110
 ; members end
 
 ;struc SDL_Event {
@@ -753,6 +758,12 @@ init_vulkan:
     call          SDL_Log
 
 
+    mov rcx, [rbp + .envptr]
+    call setup_debug_messenger
+    test rax, rax
+    jz .L_init_vulkan_fail
+
+
     mov           rcx, [rbp + .envptr] ; arg1 - Env*
     call          create_vk_surface
     test          rax, rax
@@ -887,6 +898,155 @@ init_vulkan:
     ret
 ;====================================== END init_vulkan ========================================
 
+;=============================== debug_callback - ret: VkResult ================================
+debug_callback:
+    sub rsp, 0x08 + SHADOW_SPACE
+
+    mov rcx, validation_log
+    mov rdx, [r8 + 0x28] ; pCallbackData->pMessage
+    call SDL_Log
+
+    xor rax, rax ; return 0
+
+    add rsp, 0x08 + SHADOW_SPACE
+    ret
+;===================================== END debug_callback ======================================
+
+;=============================== vkCreateDebugUtilsMessengerEXT ================================
+vkCreateDebugUtilsMessengerEXT:
+    push rbp
+    mov rbp, rsp
+    sub rsp, SHADOW_SPACE
+
+    .instance        = 0x10
+    .pCreateInfo     = 0x18
+    .pAllocator      = 0x20
+    .pDebugMessenger = 0x28
+
+    mov rax, 0 ; VK_SUCCESS
+    cmp [debug_mode], 1
+    jne .L_end
+
+    mov [rbp + .instance], rcx
+    mov [rbp + .pCreateInfo], rdx
+    mov [rbp + .pAllocator], r8
+    mov [rbp + .pDebugMessenger], r9
+
+    mov rdx, create_debug_messenger_func_name
+    call vkGetInstanceProcAddr
+    test rax, rax
+    jz .L_fail
+
+    mov rcx, [rbp + .instance]
+    mov rdx, [rbp + .pCreateInfo]
+    mov r8,  [rbp + .pAllocator]
+    mov r9,  [rbp + .pDebugMessenger]
+    call rax ; rax contains the function ptr returned by vkGetInstanceProcAddr
+
+    ; success:
+    jmp .L_end ; return the return value of the called function
+
+    .L_fail:
+    mov rax, VK_ERROR_EXTENSION_NOT_PRESENT
+    
+    .L_end:
+    add rsp, SHADOW_SPACE
+    pop rbp
+    ret
+;============================= END vkCreateDebugUtilsMessengerEXT ==============================
+
+;============================ setup_debug_messenger - ret: VkResult ============================
+setup_debug_messenger:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .createInfo = 0x30
+
+    .last_var = .createInfo
+
+    mov DWORD [rbp - .createInfo + 0x00], VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT ; .sType
+    mov QWORD [rbp - .createInfo + 0x08], 0       ; .pNext
+    mov DWORD [rbp - .createInfo + 0x10], 0       ; .flags
+    mov DWORD [rbp - .createInfo + 0x14], 0x1101  ; .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+    mov DWORD [rbp - .createInfo + 0x18], 0x7     ; .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    mov rax, debug_callback
+    mov QWORD [rbp - .createInfo + 0x20], rax     ; .pfnUserCallback
+    mov QWORD [rbp - .createInfo + 0x28], 0       ; .pUserData
+
+    lea r9, [rcx + ENV_VK_DEBUGMESSENGER]
+    mov rcx, [rcx + ENV_VK_INSTANCE]
+    lea rdx, [rbp - .createInfo]
+    mov r8, 0
+    call vkCreateDebugUtilsMessengerEXT
+    call check_vulkan_error
+    test rax, rax
+    jz .L_fail
+
+    mov rax, TRUE
+    jmp .L_end
+
+    .L_fail:
+    xor rax, rax
+
+    .L_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rbp
+    ret
+;================================= END setup_debug_messenger ===================================
+
+;=============== get_required_extensions - arg1: DWORD* out_size - ret: char** =================
+get_required_extensions:
+    push rbp
+    mov rbp, rsp
+    sub rsp, .last_var + SHADOW_SPACE
+
+    .outSize = 0x10
+
+    .ogPtr =           0x08
+    .newPtr = .ogPtr + 0x08
+
+    .last_var = .newPtr
+
+    mov [rbp + .outSize], rcx
+    
+    ; rcx already has the size ptr
+    call SDL_Vulkan_GetInstanceExtensions
+    mov [rbp - .ogPtr], rax
+    
+    mov rcx, [rbp + .outSize]
+    mov ecx, [rcx]
+    inc ecx ; make space for one more potential extension
+    shl ecx, 3 ; multiplay count by 8 (sizeof(char*))
+    call malloc
+    mov [rbp - .newPtr], rax
+
+    mov rcx, rax ; dest
+    mov rdx, [rbp - .ogPtr]
+    mov r8, [rbp + .outSize]
+    mov r8d, [r8] ; get the size under the ptr
+    shl r8d, 3 ; multiplay count by 8 (sizeof(char*))
+    call memcpy
+
+    cmp DWORD [debug_mode], 1
+    jne .L_get_required_extensions_end
+
+    ;mov rax, [rbp - .newPtr]
+    mov rdx, [rbp + .outSize]
+    mov edx, [rdx]
+    mov r8, ext_debug_utils_name
+    mov [rax + rdx * 0x08], r8
+
+    mov rdx, [rbp + .outSize]
+    inc DWORD [rdx]
+
+    ; rax contains the new pointer that will be returned (memcpy returns dest)
+    .L_get_required_extensions_end:
+    add rsp, .last_var + SHADOW_SPACE
+    pop rbp
+    ret
+;================================ END get_required_extensions ==================================
+
 ;==================== create_vk_instance - arg1: Environment* - ret: bool ======================
 create_vk_instance:
     push          rbp
@@ -898,7 +1058,8 @@ create_vk_instance:
     .appInfo    =               0x30 ; sizeof(VkApplicationInfo)
     .createInfo = .appInfo    + 0x40 ; sizeof(VkInstanceCreateInfo)
     .debugInfo  = .createInfo + 0x30 ; sizeof(VkDebugUtilsMessengerCreateInfoEXT)
-    .extCount   = .debugInfo  + 0x10 ; uint32
+    .extPtr     = .debugInfo  + 0x08 ; QWORD
+    .extCount   = .extPtr     + 0x08 ; DWORD aligned to 0x08
 
     .last_var = .extCount
 
@@ -934,11 +1095,22 @@ create_vk_instance:
     mov QWORD [rbp - .createInfo + 0x28], rcx      ; .ppEnabledLayerNames = validation_layers
 
     mov DWORD [rbp - .debugInfo + 0x00], VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT ; .sType
+    mov QWORD [rbp - .debugInfo + 0x08], 0       ; .pNext
+    mov DWORD [rbp - .debugInfo + 0x10], 0       ; .flags
+    mov DWORD [rbp - .debugInfo + 0x14], 0x1101  ; .messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+    mov DWORD [rbp - .debugInfo + 0x18], 0x7     ; .messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    mov rcx, debug_callback
+    mov QWORD [rbp - .debugInfo + 0x20], rcx ; <- debugCallback functionptr
+    mov QWORD [rbp - .debugInfo + 0x28], 0 ; .pUserData
+
+    lea rcx, [rbp - .debugInfo]
+    mov QWORD [rbp - .createInfo + 0x08], rcx ; .pNext = &debugInfo
 
     .L_create_vk_instance_no_debug:
     ; get the instance extensions needed
     lea           rcx,  [rbp - .extCount]                   ; &count
-    call          SDL_Vulkan_GetInstanceExtensions
+    call          get_required_extensions
+    mov           [rbp - .extPtr], rax       ; pointer to free later
     mov           ecx,  [rbp - .extCount]
     mov           [rbp - .createInfo + 0x30], ecx       ; .enabledExtensionCount = enabled_extension_count
     mov           [rbp - .createInfo + 0x38], rax       ; .ppEnabledExtensionNames = extension_names
@@ -962,6 +1134,9 @@ create_vk_instance:
     xor rax, rax
 
     .L_create_vk_instance_end:
+    mov rcx, [rbp - .extPtr]
+    call free
+
     add           rsp, .last_var + SHADOW_SPACE
     pop           rbp
     ret
@@ -973,6 +1148,8 @@ create_vk_surface:
     mov           rbp, rsp
     sub           rsp, SHADOW_SPACE
 
+    mov [rbp + 0x10], rcx
+
     ; create surface
     mov           rax, rcx                     ; Environment*
     mov           rcx, [rax + ENV_WINDOW]      ; a1 = Environment->window
@@ -983,6 +1160,12 @@ create_vk_surface:
     call          check_sdl_error
     test          eax, eax
     jz            .L_create_vk_surface_fail
+
+    mov rcx, log_ptr
+    mov rax, [rbp + 0x10]
+    mov rdx, [rax + ENV_SURFACE]
+    call SDL_Log
+
 
     ;success
     mov           rax, 1
@@ -2743,7 +2926,7 @@ choose_swap_present_mode:
     jl .L_choose_swap_present_mode_loop_begin
 
     .L_choose_swap_present_mode_end_default:
-    mov rax, [rcx + 0x00] ; availableFormats[0]
+    mov rax, VK_PRESENT_MODE_FIFO_KHR ; default present mode
     .L_choose_swap_present_mode_end:
     ret
 ;============================================= END choose_swap_present_mode ==================================================
@@ -2890,7 +3073,7 @@ check_vulkan_error:
 
 
 section '.data' data readable writeable
-    debug_mode           dd 0
+    debug_mode           dd FALSE
 
     window_title         db "ASM SDL Window!", 0
     log_sdl_error        db "SDL Error occured: %s", 0
@@ -2908,6 +3091,8 @@ section '.data' data readable writeable
     log_str              db "string: %s", 0
     log_2str             db "str1: [%s] str2: [%s]", 0
     log_float            db "%f", 0
+
+    validation_log       db "validation layer: [%s]", 0
 
     is_sdl               db "Initialized SDL...", 0
     is_window            db "Initialized SDL window [0x%llX]...", 0
@@ -2939,10 +3124,14 @@ section '.data' data readable writeable
     quefam_tsvb          db "queueFamily timestampValidBits: 0x%X", 0
     quefam_index         db "queueFamily index: %d", 0
 
+    create_debug_messenger_func_name db "vkCreateDebugUtilsMessengerEXT", 0
+
     required_ext1        db "VK_KHR_swapchain", 0
     required_extensions  dq required_ext1
     required_extensions_size = ($ - required_extensions) / 8
     required_extensions_size_aligned = ((required_extensions_size + 15) / 16) * 16
+
+    ext_debug_utils_name db "VK_EXT_debug_utils", 0
 
     validation_layer1    db "VK_LAYER_KHRONOS_validation", 0
     validation_layers    dq validation_layer1
